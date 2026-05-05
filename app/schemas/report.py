@@ -49,3 +49,14 @@ class StatementOut(BaseModel):
     party_id: int
     items: List[StatementItem]
     total_balance: Decimal
+
+class MonthlySales(BaseModel):
+    name: str
+    sales: Decimal
+    purchases: Decimal
+
+class DashboardAnalyticsOut(BaseModel):
+    total_profit: Decimal
+    stock_valuation: Decimal
+    outstanding_balances: Decimal
+    monthly_sales: List[MonthlySales]

@@ -13,6 +13,8 @@ from app.schemas.report import (
     ProfitReportOut,
     StatementItem,
     StatementOut,
+    DashboardAnalyticsOut,
+    MonthlySales,
 )
 
 
@@ -93,3 +95,39 @@ def party_statement(db: Session, party_id: int) -> StatementOut:
         )
 
     return StatementOut(party_id=party_id, items=items, total_balance=total_balance)
+
+def dashboard_analytics(db: Session) -> DashboardAnalyticsOut:
+    profit_data = profit_report(db)
+    inventory_data = inventory_report(db)
+    
+    invoices = db.execute(select(Invoice)).scalars().all()
+    outstanding_balances = Decimal("0")
+    for invoice in invoices:
+        paid_total = db.execute(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.invoice_id == invoice.id)
+        ).scalar_one()
+        outstanding_balances += (invoice.total_amount - paid_total)
+        
+    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    monthly_sales_dict = {m: {"sales": Decimal("0"), "purchases": Decimal("0")} for m in months}
+    
+    sales_invoices = db.execute(select(Invoice).where(Invoice.invoice_type == InvoiceType.SALE)).scalars().all()
+    for inv in sales_invoices:
+        m_name = inv.created_at.strftime("%b")
+        if m_name in monthly_sales_dict:
+            monthly_sales_dict[m_name]["sales"] += inv.total_amount
+            
+    purchase_invoices = db.execute(select(Invoice).where(Invoice.invoice_type == InvoiceType.PURCHASE)).scalars().all()
+    for inv in purchase_invoices:
+        m_name = inv.created_at.strftime("%b")
+        if m_name in monthly_sales_dict:
+            monthly_sales_dict[m_name]["purchases"] += inv.total_amount
+            
+    monthly_sales = [MonthlySales(name=k, sales=v["sales"], purchases=v["purchases"]) for k, v in monthly_sales_dict.items()]
+    
+    return DashboardAnalyticsOut(
+        total_profit=profit_data.total_profit,
+        stock_valuation=inventory_data.total_value,
+        outstanding_balances=outstanding_balances,
+        monthly_sales=monthly_sales
+    )

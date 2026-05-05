@@ -2,10 +2,15 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.schemas.report import InventoryReportOut, ProfitReportOut, StatementOut
-from app.services.reports import inventory_report, party_statement, profit_report
+from app.schemas.report import InventoryReportOut, ProfitReportOut, StatementOut, DashboardAnalyticsOut
+from app.services.reports import inventory_report, party_statement, profit_report, dashboard_analytics
 
 router = APIRouter(prefix="/reports", tags=["reports"])
+
+
+@router.get("/dashboard", response_model=DashboardAnalyticsOut)
+def dashboard(db: Session = Depends(get_db)):
+    return dashboard_analytics(db)
 
 
 @router.get("/profit", response_model=ProfitReportOut)
