@@ -49,3 +49,5 @@ htmlcov/
 # Virtual environment
 .venv/
 .venv_uv/
+*.png
+*.jpg
