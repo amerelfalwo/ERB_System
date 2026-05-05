@@ -1,12 +1,13 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 from .core.config import settings
 from .core.database import engine
+from .core.deps import get_current_user
 from .models import Base
-from .routers import batches, invoices, parties, payments, products, templates, reports
+from .routers import auth, batches, invoices, parties, payments, products, templates, reports
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -35,10 +36,11 @@ async def health_check():
     return {"status": "healthy"}
 
 
-app.include_router(parties)
-app.include_router(products)
-app.include_router(batches)
-app.include_router(invoices)
-app.include_router(payments)
-app.include_router(templates)
-app.include_router(reports)
+app.include_router(auth)
+app.include_router(parties, dependencies=[Depends(get_current_user)])
+app.include_router(products, dependencies=[Depends(get_current_user)])
+app.include_router(batches, dependencies=[Depends(get_current_user)])
+app.include_router(invoices, dependencies=[Depends(get_current_user)])
+app.include_router(payments, dependencies=[Depends(get_current_user)])
+app.include_router(templates, dependencies=[Depends(get_current_user)])
+app.include_router(reports, dependencies=[Depends(get_current_user)])

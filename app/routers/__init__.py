@@ -1,3 +1,4 @@
+from .auth import router as auth
 from .batches import router as batches
 from .invoices import router as invoices
 from .parties import router as parties
