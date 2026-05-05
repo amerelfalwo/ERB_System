@@ -5,9 +5,11 @@ WORKDIR /app
 RUN pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock* /app/
-RUN uv sync --system --frozen
+RUN uv sync --frozen
 
 COPY . /app
+
+ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 7860
 
