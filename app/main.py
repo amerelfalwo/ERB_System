@@ -60,7 +60,7 @@ async def health_check():
     return {"status": "healthy"}
 
 
-app.include_router(auth)
+app.include_router(auth, prefix="/auth")
 app.include_router(parties, dependencies=[Depends(get_current_user)])
 app.include_router(products, dependencies=[Depends(get_current_user)])
 app.include_router(batches, dependencies=[Depends(get_current_user)])

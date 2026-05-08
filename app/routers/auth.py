@@ -9,7 +9,7 @@ from app.core.security import ACCESS_TOKEN_EXPIRE_MINUTES, create_access_token, 
 from app.models.domain import Tenant, User
 from app.schemas.user import Token, UserCreate, UserOut, UserProfile
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(tags=["auth"])
 
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
