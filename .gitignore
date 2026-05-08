@@ -36,10 +36,13 @@ wheels/
 *~
 .DS_Store
 
-# Testing
+# Testing — do not push test files
+tests/
 .pytest_cache/
 .coverage
 htmlcov/
+pytest.ini
+conftest.py
 
 # Database
 *.db
@@ -49,5 +52,17 @@ htmlcov/
 # Virtual environment
 .venv/
 .venv_uv/
+
+# Media / binary assets
 *.png
 *.jpg
+*.jpeg
+*.gif
+*.ico
+
+# Logs
+*.log
+logs/
+
+# Lock file (optional — include if you want reproducible deploys)
+# uv.lock

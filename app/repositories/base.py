@@ -1,0 +1,278 @@
+from decimal import Decimal
+from typing import Optional, List
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, joinedload
+
+from app.models.domain import (
+    Invoice, InvoiceItem, InvoiceType, Party, PartyType,
+    Payment, Product, StockBatch,
+)
+
+STATUS_PAID = "paid"
+STATUS_PARTIAL = "partial"
+STATUS_UNPAID = "unpaid"
+
+
+class InvoiceRepository:
+    def __init__(self, db: Session, tenant_id: int):
+        self._db = db
+        self._tid = tenant_id
+
+    def get_by_id(self, invoice_id: int) -> Optional[Invoice]:
+        return self._db.execute(
+            select(Invoice)
+            .options(joinedload(Invoice.items).joinedload(InvoiceItem.batch).joinedload(StockBatch.product))
+            .where(Invoice.id == invoice_id, Invoice.tenant_id == self._tid)
+        ).unique().scalar_one_or_none()
+
+    def list(self, party_id: Optional[int] = None) -> List[Invoice]:
+        q = (
+            select(Invoice)
+            .options(
+                joinedload(Invoice.items).joinedload(InvoiceItem.batch).joinedload(StockBatch.product),
+                joinedload(Invoice.payments),
+            )
+            .where(Invoice.tenant_id == self._tid)
+        )
+        if party_id is not None:
+            q = q.where(Invoice.party_id == party_id)
+        q = q.order_by(Invoice.created_at.desc())
+        return self._db.execute(q).unique().scalars().all()
+
+    def bulk_payment_sums(self, invoice_ids: List[int]) -> dict:
+        if not invoice_ids:
+            return {}
+        rows = self._db.execute(
+            select(Payment.invoice_id, func.coalesce(func.sum(Payment.amount), 0))
+            .where(Payment.invoice_id.in_(invoice_ids))
+            .group_by(Payment.invoice_id)
+        ).all()
+        return {inv_id: amt for inv_id, amt in rows}
+
+    def get_paid_amount(self, invoice_id: int) -> Decimal:
+        return Decimal(str(
+            self._db.execute(
+                select(func.coalesce(func.sum(Payment.amount), 0))
+                .where(Payment.invoice_id == invoice_id)
+            ).scalar_one()
+        ))
+
+    def add(self, invoice: Invoice) -> None:
+        self._db.add(invoice)
+
+    def delete(self, invoice: Invoice) -> None:
+        self._db.delete(invoice)
+
+    def commit(self) -> None:
+        self._db.commit()
+
+    def flush(self) -> None:
+        self._db.flush()
+
+    def refresh(self, obj) -> None:
+        self._db.refresh(obj)
+
+    def rollback(self) -> None:
+        self._db.rollback()
+
+
+class BatchRepository:
+    def __init__(self, db: Session, tenant_id: int):
+        self._db = db
+        self._tid = tenant_id
+
+    def get_by_id(self, batch_id: int) -> Optional[StockBatch]:
+        return self._db.execute(
+            select(StockBatch).where(StockBatch.id == batch_id, StockBatch.tenant_id == self._tid)
+        ).scalar_one_or_none()
+
+    def get_fifo_batches(self, product_id: int) -> List[StockBatch]:
+        return self._db.execute(
+            select(StockBatch).where(
+                StockBatch.product_id == product_id,
+                StockBatch.tenant_id == self._tid,
+                StockBatch.remaining_quantity > 0,
+            ).order_by(StockBatch.created_at.asc(), StockBatch.id.asc())
+        ).scalars().all()
+
+    def get_highest_selling_price(self, product_id: int) -> Optional[Decimal]:
+        price = self._db.execute(
+            select(StockBatch.current_selling_price).where(
+                StockBatch.product_id == product_id,
+                StockBatch.tenant_id == self._tid,
+                StockBatch.remaining_quantity > 0,
+            ).order_by(StockBatch.current_selling_price.desc()).limit(1)
+        ).scalar_one_or_none()
+        if price is None:
+            price = self._db.execute(
+                select(StockBatch.current_selling_price).where(
+                    StockBatch.product_id == product_id,
+                    StockBatch.tenant_id == self._tid,
+                ).order_by(StockBatch.current_selling_price.desc()).limit(1)
+            ).scalar_one_or_none()
+        return price
+
+    def add(self, batch: StockBatch) -> None:
+        self._db.add(batch)
+
+    def delete(self, batch: StockBatch) -> None:
+        self._db.delete(batch)
+
+    def flush(self) -> None:
+        self._db.flush()
+
+
+class PartyRepository:
+    def __init__(self, db: Session, tenant_id: int):
+        self._db = db
+        self._tid = tenant_id
+
+    def get_by_id(self, party_id: int) -> Optional[Party]:
+        return self._db.execute(
+            select(Party).where(Party.id == party_id, Party.tenant_id == self._tid)
+        ).scalar_one_or_none()
+
+    def list(self) -> List[Party]:
+        return self._db.execute(
+            select(Party).where(Party.tenant_id == self._tid)
+        ).scalars().all()
+
+    def invoice_count(self, party_id: int) -> int:
+        return self._db.execute(
+            select(func.count(Invoice.id)).where(
+                Invoice.party_id == party_id, Invoice.tenant_id == self._tid
+            )
+        ).scalar_one()
+
+    def payment_count(self, party_id: int) -> int:
+        return self._db.execute(
+            select(func.count(Payment.id)).where(Payment.party_id == party_id)
+        ).scalar_one()
+
+    def total_invoiced(self, party_id: int, invoice_type: InvoiceType) -> Decimal:
+        return Decimal(str(self._db.execute(
+            select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
+                Invoice.party_id == party_id,
+                Invoice.invoice_type == invoice_type,
+                Invoice.tenant_id == self._tid,
+            )
+        ).scalar_one()))
+
+    def total_paid(self, party_id: int) -> Decimal:
+        return Decimal(str(self._db.execute(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.party_id == party_id)
+        ).scalar_one()))
+
+    def total_invoiced_excluding(self, party_id: int, invoice_type: InvoiceType, exclude_invoice_id: int) -> Decimal:
+        return Decimal(str(self._db.execute(
+            select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
+                Invoice.party_id == party_id,
+                Invoice.invoice_type == invoice_type,
+                Invoice.tenant_id == self._tid,
+                Invoice.id != exclude_invoice_id,
+            )
+        ).scalar_one()))
+
+    def total_invoiced_net_excluding(self, party_id: int, exclude_invoice_id: int) -> Decimal:
+        sale_total = Decimal(str(self._db.execute(
+            select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
+                Invoice.party_id == party_id,
+                Invoice.invoice_type == InvoiceType.SALE,
+                Invoice.tenant_id == self._tid,
+                Invoice.id != exclude_invoice_id,
+            )
+        ).scalar_one()))
+        return_total = Decimal(str(self._db.execute(
+            select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
+                Invoice.party_id == party_id,
+                Invoice.invoice_type == InvoiceType.SALE_RETURN,
+                Invoice.tenant_id == self._tid,
+                Invoice.id != exclude_invoice_id,
+            )
+        ).scalar_one()))
+        return max(Decimal("0"), sale_total - return_total)
+
+    def total_paid_excluding(self, party_id: int, exclude_invoice_id: int) -> Decimal:
+        return Decimal(str(self._db.execute(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(
+                Payment.party_id == party_id,
+                Payment.invoice_id != exclude_invoice_id,
+            )
+        ).scalar_one()))
+
+    def add(self, party: Party) -> None:
+        self._db.add(party)
+
+    def delete(self, party: Party) -> None:
+        self._db.delete(party)
+
+    def commit(self) -> None:
+        self._db.commit()
+
+    def refresh(self, obj) -> None:
+        self._db.refresh(obj)
+
+
+class ProductRepository:
+    def __init__(self, db: Session, tenant_id: int):
+        self._db = db
+        self._tid = tenant_id
+
+    def get_by_id(self, product_id: int) -> Optional[Product]:
+        return self._db.execute(
+            select(Product).where(Product.id == product_id, Product.tenant_id == self._tid)
+        ).scalar_one_or_none()
+
+    def list(self) -> List[Product]:
+        return self._db.execute(
+            select(Product).where(Product.tenant_id == self._tid)
+        ).scalars().all()
+
+    def count_by_ids(self, product_ids: List[int]) -> int:
+        return len(self._db.execute(
+            select(Product.id).where(
+                Product.id.in_(product_ids),
+                Product.tenant_id == self._tid,
+            )
+        ).scalars().all())
+
+    def add(self, product: Product) -> None:
+        self._db.add(product)
+
+    def delete(self, product: Product) -> None:
+        self._db.delete(product)
+
+    def commit(self) -> None:
+        self._db.commit()
+
+    def refresh(self, obj) -> None:
+        self._db.refresh(obj)
+
+
+class PaymentRepository:
+    def __init__(self, db: Session, tenant_id: int):
+        self._db = db
+        self._tid = tenant_id
+
+    def get_by_id(self, payment_id: int) -> Optional[Payment]:
+        return self._db.execute(
+            select(Payment).where(Payment.id == payment_id)
+        ).scalar_one_or_none()
+
+    def get_for_invoice(self, invoice_id: int, payment_id: int) -> Optional[Payment]:
+        return self._db.execute(
+            select(Payment).where(Payment.id == payment_id, Payment.invoice_id == invoice_id)
+        ).scalar_one_or_none()
+
+    def add(self, payment: Payment) -> None:
+        self._db.add(payment)
+
+    def delete(self, payment: Payment) -> None:
+        self._db.delete(payment)
+
+    def commit(self) -> None:
+        self._db.commit()
+
+    def refresh(self, obj) -> None:
+        self._db.refresh(obj)

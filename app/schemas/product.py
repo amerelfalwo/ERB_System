@@ -11,5 +11,6 @@ class ProductCreate(ProductBase):
 
 class ProductOut(ProductBase):
     id: int
+    last_purchase_price: float | None = 0.0
 
     model_config = ConfigDict(from_attributes=True)

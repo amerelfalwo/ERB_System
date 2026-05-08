@@ -37,17 +37,16 @@ class InventoryReportOut(BaseModel):
     total_value: Decimal
 
 
-class StatementItem(BaseModel):
-    invoice_id: int
-    invoice_type: str
-    invoice_total: Decimal
-    paid_total: Decimal
+class LedgerTransaction(BaseModel):
+    date: str
+    type: str
+    reference: str
+    amount: Decimal
     balance: Decimal
-
 
 class StatementOut(BaseModel):
     party_id: int
-    items: List[StatementItem]
+    transactions: List[LedgerTransaction]
     total_balance: Decimal
 
 class MonthlySales(BaseModel):

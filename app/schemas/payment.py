@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class PaymentCreate(BaseModel):
-    party_id: int
+    party_id: Optional[int] = None
     amount: Decimal
     invoice_id: Optional[int] = None
 

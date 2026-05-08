@@ -6,3 +6,4 @@ from .payments import router as payments
 from .products import router as products
 from .templates import router as templates
 from .reports import router as reports
+from .tenants import router as tenants
