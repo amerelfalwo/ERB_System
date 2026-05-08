@@ -2,6 +2,13 @@ from pydantic import BaseModel
 from typing import Optional
 
 
+class TenantRegistration(BaseModel):
+    full_name: str
+    company_name: str
+    username: str
+    password: str
+
+
 class UserCreate(BaseModel):
     username: str
     password: str
@@ -12,6 +19,8 @@ class UserCreate(BaseModel):
 class UserOut(BaseModel):
     id: int
     username: str
+    full_name: Optional[str] = None
+    role: str
 
     class Config:
         from_attributes = True
@@ -31,6 +40,7 @@ class TenantInfo(BaseModel):
 class UserProfile(BaseModel):
     id: int
     username: str
+    full_name: Optional[str] = None
     role: str
     tenant: TenantInfo
 

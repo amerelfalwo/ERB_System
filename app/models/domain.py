@@ -120,6 +120,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     username = Column(String, unique=True, index=True)
+    full_name = Column(String, nullable=True)
     hashed_password = Column(String)
     role = Column(String, default="admin", server_default="admin")
     tenant = relationship("Tenant", back_populates="users")

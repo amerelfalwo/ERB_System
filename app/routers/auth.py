@@ -11,29 +11,40 @@ from app.schemas.user import Token, UserCreate, UserOut, UserProfile
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-@router.post("/register", response_model=UserOut)
-def register(user_in: UserCreate, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == user_in.username).first()
-    if user:
-        raise HTTPException(
-            status_code=400,
-            detail="The user with this username already exists in the system.",
-        )
-    
-    tenant = Tenant(company_name=user_in.company_name)
-    db.add(tenant)
-    db.commit()
-    db.refresh(tenant)
 
-    user = User(
-        username=user_in.username,
-        hashed_password=get_password_hash(user_in.password),
-        tenant_id=tenant.id,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+@router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+def register(user_in: UserCreate, db: Session = Depends(get_db)):
+    existing = db.query(User).filter(User.username == user_in.username).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A user with this username already exists.",
+        )
+
+    try:
+        tenant = Tenant(company_name=user_in.company_name)
+        db.add(tenant)
+        db.flush()
+
+        user = User(
+            username=user_in.username,
+            full_name=user_in.full_name,
+            hashed_password=get_password_hash(user_in.password),
+            role="admin",
+            tenant_id=tenant.id,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Registration failed. Please try again.",
+        )
+
     return user
+
 
 @router.post("/login", response_model=Token)
 def login_access_token(
@@ -57,6 +68,7 @@ def login_access_token(
         data={"sub": user.username, "tenant_id": user.tenant_id}, expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"}
+
 
 @router.get("/me", response_model=UserProfile)
 def read_current_user(current_user: User = Depends(get_current_user)):
