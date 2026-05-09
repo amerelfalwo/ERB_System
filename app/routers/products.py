@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.domain import Invoice, InvoiceItem, InvoiceType, Product, StockBatch, User
+from app.repositories.base import ProductRepository
 from app.schemas.product import ProductCreate
 
 router = APIRouter(prefix="/products", tags=["products"])
@@ -102,12 +103,13 @@ def create_product(
 
 @router.get("", response_model=list[ProductWithCostOut])
 def list_products(
+    skip: int = 0,
+    limit: int = 100,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    products = db.execute(
-        select(Product).where(Product.tenant_id == current_user.tenant_id)
-    ).scalars().all()
+    prod_repo = ProductRepository(db, current_user.tenant_id)
+    products = prod_repo.list(skip=skip, limit=limit)
 
     result = []
     for product in products:
@@ -125,6 +127,15 @@ def list_products(
             )
         )
     return result
+
+
+@router.get("/select")
+def list_products_select(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    prod_repo = ProductRepository(db, current_user.tenant_id)
+    return prod_repo.get_all_for_select()
 
 
 @router.delete("/{product_id}")

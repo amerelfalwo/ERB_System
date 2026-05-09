@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.domain import Invoice, InvoiceItem, InvoiceType, Party, PartyType, Payment, Product, StockBatch, User
+from app.repositories.base import PartyRepository
 from app.schemas.party import PartyCreate, PartyOut
 from app.services.payments import get_party_balance
 
@@ -28,10 +29,22 @@ def create_party(
 
 @router.get("", response_model=list[PartyOut])
 def list_parties(
+    skip: int = 0,
+    limit: int = 100,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return db.execute(select(Party).where(Party.tenant_id == current_user.tenant_id)).scalars().all()
+    party_repo = PartyRepository(db, current_user.tenant_id)
+    return party_repo.list(skip=skip, limit=limit)
+
+
+@router.get("/select")
+def list_parties_select(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    party_repo = PartyRepository(db, current_user.tenant_id)
+    return party_repo.get_all_for_select()
 
 
 @router.get("/{party_id}/balance")
@@ -47,6 +60,57 @@ def party_balance(
         raise HTTPException(status_code=404, detail="Party not found")
     balance = get_party_balance(db, party_id, current_user.tenant_id)
     return {"party_id": party_id, "balance": balance}
+
+
+@router.post("/{party_id}/payments")
+def create_party_payment(
+    party_id: int,
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    party = db.execute(
+        select(Party).where(Party.id == party_id, Party.tenant_id == current_user.tenant_id)
+    ).scalar_one_or_none()
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+
+    amount_paid = Decimal(str(data.get("amount_paid", 0)))
+    if amount_paid <= 0:
+        raise HTTPException(status_code=400, detail="Invalid payment amount")
+
+    # To check the balance without rewriting the logic, call the same summary logic.
+    if party.party_type == PartyType.CLIENT:
+        invoice_type = InvoiceType.SALE
+    else:
+        invoice_type = InvoiceType.PURCHASE
+
+    total_invoiced = db.execute(
+        select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
+            Invoice.party_id == party_id,
+            Invoice.invoice_type == invoice_type,
+            Invoice.tenant_id == current_user.tenant_id,
+        )
+    ).scalar_one()
+
+    total_paid = db.execute(
+        select(func.coalesce(func.sum(Payment.amount), 0)).where(
+            Payment.party_id == party_id,
+        )
+    ).scalar_one()
+
+    balance = total_invoiced - total_paid
+
+    if amount_paid > balance:
+        raise HTTPException(status_code=400, detail="Amount exceeds total debt")
+
+    payment = Payment(party_id=party.id, amount=amount_paid)
+    db.add(payment)
+    db.commit()
+    db.refresh(party)
+    
+    # Return updated summary to reflect new balance on frontend
+    return party_summary(party_id, db, current_user)
 
 
 @router.get("/{party_id}/summary")

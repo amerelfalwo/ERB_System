@@ -2,7 +2,7 @@ from decimal import Decimal
 from typing import Optional, List
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models.domain import (
     Invoice, InvoiceItem, InvoiceType, Party, PartyType,
@@ -22,30 +22,34 @@ class InvoiceRepository:
     def get_by_id(self, invoice_id: int) -> Optional[Invoice]:
         return self._db.execute(
             select(Invoice)
-            .options(joinedload(Invoice.items).joinedload(InvoiceItem.batch).joinedload(StockBatch.product))
+            .options(
+                selectinload(Invoice.items).joinedload(InvoiceItem.batch).joinedload(StockBatch.product),
+                selectinload(Invoice.payments)
+            )
             .where(Invoice.id == invoice_id, Invoice.tenant_id == self._tid)
-        ).unique().scalar_one_or_none()
+        ).scalar_one_or_none()
 
-    def list(self, party_id: Optional[int] = None) -> List[Invoice]:
+    def list(self, party_id: Optional[int] = None, skip: int = 0, limit: int = 100) -> List[Invoice]:
         q = (
             select(Invoice)
             .options(
-                joinedload(Invoice.items).joinedload(InvoiceItem.batch).joinedload(StockBatch.product),
-                joinedload(Invoice.payments),
+                selectinload(Invoice.items).joinedload(InvoiceItem.batch).joinedload(StockBatch.product),
+                selectinload(Invoice.payments),
             )
             .where(Invoice.tenant_id == self._tid)
         )
         if party_id is not None:
             q = q.where(Invoice.party_id == party_id)
-        q = q.order_by(Invoice.created_at.desc())
-        return self._db.execute(q).unique().scalars().all()
+        q = q.order_by(Invoice.created_at.desc()).offset(skip).limit(limit)
+        return self._db.execute(q).scalars().all()
 
     def bulk_payment_sums(self, invoice_ids: List[int]) -> dict:
         if not invoice_ids:
             return {}
         rows = self._db.execute(
             select(Payment.invoice_id, func.coalesce(func.sum(Payment.amount), 0))
-            .where(Payment.invoice_id.in_(invoice_ids))
+            .join(Invoice, Payment.invoice_id == Invoice.id)
+            .where(Payment.invoice_id.in_(invoice_ids), Invoice.tenant_id == self._tid)
             .group_by(Payment.invoice_id)
         ).all()
         return {inv_id: amt for inv_id, amt in rows}
@@ -54,7 +58,8 @@ class InvoiceRepository:
         return Decimal(str(
             self._db.execute(
                 select(func.coalesce(func.sum(Payment.amount), 0))
-                .where(Payment.invoice_id == invoice_id)
+                .join(Invoice, Payment.invoice_id == Invoice.id)
+                .where(Payment.invoice_id == invoice_id, Invoice.tenant_id == self._tid)
             ).scalar_one()
         ))
 
@@ -133,10 +138,18 @@ class PartyRepository:
             select(Party).where(Party.id == party_id, Party.tenant_id == self._tid)
         ).scalar_one_or_none()
 
-    def list(self) -> List[Party]:
+    def list(self, skip: int = 0, limit: int = 100) -> List[Party]:
         return self._db.execute(
             select(Party).where(Party.tenant_id == self._tid)
+            .offset(skip).limit(limit)
         ).scalars().all()
+
+    def get_all_for_select(self) -> List[dict]:
+        rows = self._db.execute(
+            select(Party.id, Party.name)
+            .where(Party.tenant_id == self._tid)
+        ).all()
+        return [{"id": r.id, "name": r.name} for r in rows]
 
     def invoice_count(self, party_id: int) -> int:
         return self._db.execute(
@@ -147,7 +160,7 @@ class PartyRepository:
 
     def payment_count(self, party_id: int) -> int:
         return self._db.execute(
-            select(func.count(Payment.id)).where(Payment.party_id == party_id)
+            select(func.count(Payment.id)).join(Party).where(Payment.party_id == party_id, Party.tenant_id == self._tid)
         ).scalar_one()
 
     def total_invoiced(self, party_id: int, invoice_type: InvoiceType) -> Decimal:
@@ -161,7 +174,7 @@ class PartyRepository:
 
     def total_paid(self, party_id: int) -> Decimal:
         return Decimal(str(self._db.execute(
-            select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.party_id == party_id)
+            select(func.coalesce(func.sum(Payment.amount), 0)).join(Party).where(Payment.party_id == party_id, Party.tenant_id == self._tid)
         ).scalar_one()))
 
     def total_invoiced_excluding(self, party_id: int, invoice_type: InvoiceType, exclude_invoice_id: int) -> Decimal:
@@ -195,9 +208,10 @@ class PartyRepository:
 
     def total_paid_excluding(self, party_id: int, exclude_invoice_id: int) -> Decimal:
         return Decimal(str(self._db.execute(
-            select(func.coalesce(func.sum(Payment.amount), 0)).where(
+            select(func.coalesce(func.sum(Payment.amount), 0)).join(Party).where(
                 Payment.party_id == party_id,
                 Payment.invoice_id != exclude_invoice_id,
+                Party.tenant_id == self._tid,
             )
         ).scalar_one()))
 
@@ -224,10 +238,18 @@ class ProductRepository:
             select(Product).where(Product.id == product_id, Product.tenant_id == self._tid)
         ).scalar_one_or_none()
 
-    def list(self) -> List[Product]:
+    def list(self, skip: int = 0, limit: int = 100) -> List[Product]:
         return self._db.execute(
             select(Product).where(Product.tenant_id == self._tid)
+            .offset(skip).limit(limit)
         ).scalars().all()
+
+    def get_all_for_select(self) -> List[dict]:
+        rows = self._db.execute(
+            select(Product.id, Product.name)
+            .where(Product.tenant_id == self._tid)
+        ).all()
+        return [{"id": r.id, "name": r.name} for r in rows]
 
     def count_by_ids(self, product_ids: List[int]) -> int:
         return len(self._db.execute(
@@ -257,12 +279,12 @@ class PaymentRepository:
 
     def get_by_id(self, payment_id: int) -> Optional[Payment]:
         return self._db.execute(
-            select(Payment).where(Payment.id == payment_id)
+            select(Payment).join(Party).where(Payment.id == payment_id, Party.tenant_id == self._tid)
         ).scalar_one_or_none()
 
     def get_for_invoice(self, invoice_id: int, payment_id: int) -> Optional[Payment]:
         return self._db.execute(
-            select(Payment).where(Payment.id == payment_id, Payment.invoice_id == invoice_id)
+            select(Payment).join(Party).where(Payment.id == payment_id, Payment.invoice_id == invoice_id, Party.tenant_id == self._tid)
         ).scalar_one_or_none()
 
     def add(self, payment: Payment) -> None:

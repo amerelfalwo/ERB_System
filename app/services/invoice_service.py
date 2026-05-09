@@ -91,8 +91,8 @@ def get_party_previous_balance_svc(
     return max(Decimal("0"), inv_total - paid_total)
 
 
-def list_invoices_svc(invoice_repo: InvoiceRepository, party_id=None) -> list:
-    invoices = invoice_repo.list(party_id=party_id)
+def list_invoices_svc(invoice_repo: InvoiceRepository, party_id=None, skip: int = 0, limit: int = 100) -> list:
+    invoices = invoice_repo.list(party_id=party_id, skip=skip, limit=limit)
     ids = [i.id for i in invoices]
     payment_map = invoice_repo.bulk_payment_sums(ids)
     return [_build_invoice_dict(inv, Decimal(str(payment_map.get(inv.id, 0)))) for inv in invoices]
@@ -442,6 +442,14 @@ def process_return_svc(
             raise HTTPException(status_code=400, detail=ERR_NO_VALID_RETURN_ITEMS)
 
         return_invoice.total_amount = total_return
+
+        if total_return > Decimal("0"):
+            refund_payment = Payment(
+                party_id=orig_invoice.party_id,
+                invoice_id=orig_invoice.id,
+                amount=total_return
+            )
+            invoice_repo.add(refund_payment)
 
         invoice_repo.commit()
     except Exception:

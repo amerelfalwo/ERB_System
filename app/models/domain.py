@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text
 from sqlalchemy.orm import relationship
 
 from . import Base
@@ -19,11 +19,11 @@ class InvoiceType(enum.Enum):
 class Tenant(Base):
     __tablename__ = "tenants"
     id = Column(Integer, primary_key=True, index=True)
-    company_name = Column(String, nullable=False)
+    company_name = Column(String, nullable=False, index=True)
     logo_url = Column(String)
     primary_color = Column(String)
     default_footer_text = Column(Text, nullable=True)
-    phone = Column(String, nullable=True)
+    phone = Column(String, nullable=True, index=True)
     address = Column(Text, nullable=True)
     tax_number = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
@@ -37,11 +37,14 @@ class Tenant(Base):
 
 class Party(Base):
     __tablename__ = "parties"
+    __table_args__ = (
+        Index("idx_tenant_party_type", "tenant_id", "party_type"),
+    )
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String, index=True)
     party_type = Column(Enum(PartyType, native_enum=False))
-    phone = Column(String, nullable=True)
+    phone = Column(String, nullable=True, index=True)
     address = Column(Text, nullable=True)
     tenant = relationship("Tenant", back_populates="parties")
     invoices = relationship("Invoice", back_populates="party")
@@ -49,6 +52,9 @@ class Party(Base):
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (
+        Index("idx_tenant_product_name", "tenant_id", "name"),
+    )
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String, index=True)
@@ -60,9 +66,12 @@ class Product(Base):
 
 class StockBatch(Base):
     __tablename__ = "stock_batches"
+    __table_args__ = (
+        Index("idx_tenant_product_id", "tenant_id", "product_id"),
+    )
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
-    product_id = Column(Integer, ForeignKey("products.id"))
+    product_id = Column(Integer, ForeignKey("products.id"), index=True)
     purchase_price = Column(Numeric(12, 2))
     current_selling_price = Column(Numeric(12, 2))
     initial_quantity = Column(Numeric(12, 3))
@@ -73,9 +82,13 @@ class StockBatch(Base):
 
 class Invoice(Base):
     __tablename__ = "invoices"
+    __table_args__ = (
+        Index("idx_tenant_invoice_type", "tenant_id", "invoice_type"),
+        Index("idx_tenant_party_id", "tenant_id", "party_id"),
+    )
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
-    party_id = Column(Integer, ForeignKey("parties.id"))
+    party_id = Column(Integer, ForeignKey("parties.id"), index=True)
     invoice_type = Column(Enum(InvoiceType, native_enum=False))
     total_amount = Column(Numeric(12, 2))
     delivery_fee = Column(Numeric(12, 2), default=0)
@@ -89,8 +102,8 @@ class Invoice(Base):
 class InvoiceItem(Base):
     __tablename__ = "invoice_items"
     id = Column(Integer, primary_key=True, index=True)
-    invoice_id = Column(Integer, ForeignKey("invoices.id"))
-    batch_id = Column(Integer, ForeignKey("stock_batches.id"))
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), index=True)
+    batch_id = Column(Integer, ForeignKey("stock_batches.id"), index=True)
     quantity = Column(Numeric(12, 3))
     unit_price = Column(Numeric(12, 2))  # Keep for backwards compat or as general price
     purchase_price = Column(Numeric(12, 2), nullable=True)
@@ -101,8 +114,8 @@ class InvoiceItem(Base):
 class Payment(Base):
     __tablename__ = "payments"
     id = Column(Integer, primary_key=True, index=True)
-    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=True)
-    party_id = Column(Integer, ForeignKey("parties.id"))
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=True, index=True)
+    party_id = Column(Integer, ForeignKey("parties.id"), index=True)
     amount = Column(Numeric(12, 2))
     payment_date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     invoice = relationship("Invoice", back_populates="payments")

@@ -64,11 +64,13 @@ def _invoice_out(invoice, invoice_repo: InvoiceRepository, party_repo: PartyRepo
 @router.get("")
 def list_invoices(
     party_id: int = None,
+    skip: int = 0,
+    limit: int = 100,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     inv_repo = InvoiceRepository(db, current_user.tenant_id)
-    return list_invoices_svc(inv_repo, party_id=party_id)
+    return list_invoices_svc(inv_repo, party_id=party_id, skip=skip, limit=limit)
 
 
 @router.post("/purchase", response_model=InvoiceOut)
