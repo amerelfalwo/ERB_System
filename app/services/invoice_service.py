@@ -443,17 +443,6 @@ def process_return_svc(
 
         return_invoice.total_amount = total_return
 
-        # ── Cap the auto-credit to what was actually paid on the original invoice ──
-        # This prevents over-crediting when the original invoice was partially paid or unpaid.
-        orig_paid = invoice_repo.get_paid_amount(orig_invoice.id)
-        credit_amount = min(total_return, orig_paid)
-        if credit_amount > 0:
-            credit = Payment(
-                party_id=orig_invoice.party_id,
-                invoice_id=return_invoice.id,
-                amount=credit_amount,
-            )
-            invoice_repo.add(credit)
         invoice_repo.commit()
     except Exception:
         invoice_repo.rollback()

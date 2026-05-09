@@ -30,6 +30,8 @@ async def lifespan(app: FastAPI):
             conn.execute(text("ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS purchase_price NUMERIC(10, 2);"))
             conn.execute(text("ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS sale_price NUMERIC(10, 2);"))
             conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR;"))
+            conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS purchase_price NUMERIC(10, 2) DEFAULT 0;"))
+            conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS sell_price NUMERIC(10, 2) DEFAULT 0;"))
             print("Successfully migrated database columns")
     except Exception as e:
         print("Migration error:", e)

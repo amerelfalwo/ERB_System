@@ -18,6 +18,8 @@ class ProductWithCostOut(BaseModel):
     id: int
     name: str
     last_purchase_price: Optional[float] = 0.0
+    purchase_price: Optional[float] = 0.0
+    sell_price: Optional[float] = 0.0
     current_cost: Optional[float] = None
     current_selling_price: Optional[float] = None
 
@@ -78,7 +80,12 @@ def create_product(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    product = Product(name=data.name, tenant_id=current_user.tenant_id)
+    product = Product(
+        name=data.name,
+        tenant_id=current_user.tenant_id,
+        purchase_price=data.purchase_price,
+        sell_price=data.sell_price
+    )
     db.add(product)
     db.commit()
     db.refresh(product)
@@ -86,6 +93,8 @@ def create_product(
         id=product.id,
         name=product.name,
         last_purchase_price=float(product.last_purchase_price or 0),
+        purchase_price=float(product.purchase_price or 0),
+        sell_price=float(product.sell_price or 0),
         current_cost=None,
         current_selling_price=None,
     )
@@ -109,6 +118,8 @@ def list_products(
                 id=product.id,
                 name=product.name,
                 last_purchase_price=float(product.last_purchase_price or 0),
+                purchase_price=float(product.purchase_price or 0),
+                sell_price=float(product.sell_price or 0),
                 current_cost=float(cost) if cost is not None else None,
                 current_selling_price=float(sell) if sell is not None else None,
             )
@@ -138,3 +149,42 @@ def delete_product(
     db.delete(product)
     db.commit()
     return {"status": "deleted"}
+
+
+from app.schemas.product import ProductUpdate
+
+@router.put("/{product_id}", response_model=ProductWithCostOut)
+def update_product(
+    product_id: int,
+    data: ProductUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    product = db.execute(
+        select(Product).where(Product.id == product_id, Product.tenant_id == current_user.tenant_id)
+    ).scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    if data.name is not None:
+        product.name = data.name
+    if data.purchase_price is not None:
+        product.purchase_price = data.purchase_price
+    if data.sell_price is not None:
+        product.sell_price = data.sell_price
+
+    db.commit()
+    db.refresh(product)
+
+    cost = _get_current_cost(db, product.id, current_user.tenant_id)
+    sell = _get_current_selling_price(db, product.id, current_user.tenant_id)
+
+    return ProductWithCostOut(
+        id=product.id,
+        name=product.name,
+        last_purchase_price=float(product.last_purchase_price or 0),
+        purchase_price=float(product.purchase_price or 0),
+        sell_price=float(product.sell_price or 0),
+        current_cost=float(cost) if cost is not None else None,
+        current_selling_price=float(sell) if sell is not None else None,
+    )

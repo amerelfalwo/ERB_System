@@ -155,17 +155,19 @@ def inventory_report(db: Session, tenant_id: int) -> InventoryReportOut:
 
 
 def party_statement(db: Session, party_id: int, tenant_id: int) -> StatementOut:
+    party = db.execute(
+        select(Party).where(Party.id == party_id, Party.tenant_id == tenant_id)
+    ).scalar_one_or_none()
+    if not party:
+        return StatementOut(party_id=party_id, transactions=[], total_balance=Decimal("0"))
+
     invoices = db.execute(
         select(Invoice).where(Invoice.party_id == party_id, Invoice.tenant_id == tenant_id)
     ).scalars().all()
 
-    invoice_ids = [inv.id for inv in invoices]
     payments = db.execute(
-        select(Payment).where(
-            Payment.party_id == party_id,
-            Payment.invoice_id.in_(invoice_ids) if invoice_ids else Payment.invoice_id.is_(None),
-        )
-    ).scalars().all() if invoice_ids else []
+        select(Payment).where(Payment.party_id == party_id)
+    ).scalars().all()
 
     transactions = []
 

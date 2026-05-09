@@ -27,6 +27,14 @@ class TenantSettingsUpdate(BaseModel):
     default_footer_text: Optional[str] = None
 
 
+class TenantUpdate(BaseModel):
+    company_name: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    tax_number: Optional[str] = None
+    default_invoice_footer: Optional[str] = None
+
+
 class TenantOut(BaseModel):
     id: int
     company_name: str
@@ -95,6 +103,31 @@ def update_tenant_settings(
     for field, value in update_data.items():
         if hasattr(tenant, field):
             setattr(tenant, field, value)
+    db.commit()
+    db.refresh(tenant)
+    return tenant
+
+
+@router.put("/settings", response_model=TenantOut)
+def update_tenant_settings_put(
+    data: TenantUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    tenant = db.execute(
+        select(Tenant).where(Tenant.id == current_user.tenant_id, Tenant.is_active.is_(True))
+    ).scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+        
+    update_data = data.model_dump(exclude_unset=True)
+    if "default_invoice_footer" in update_data:
+        tenant.default_footer_text = update_data.pop("default_invoice_footer")
+        
+    for field, value in update_data.items():
+        if hasattr(tenant, field):
+            setattr(tenant, field, value)
+            
     db.commit()
     db.refresh(tenant)
     return tenant

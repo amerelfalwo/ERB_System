@@ -53,6 +53,8 @@ class Product(Base):
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String, index=True)
     last_purchase_price = Column(Numeric(12, 2), default=0)
+    purchase_price = Column(Numeric(12, 2), default=0)
+    sell_price = Column(Numeric(12, 2), default=0)
     tenant = relationship("Tenant", back_populates="products")
     batches = relationship("StockBatch", back_populates="product")
 
