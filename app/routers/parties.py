@@ -20,7 +20,14 @@ def create_party(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    party = Party(name=data.name, party_type=data.party_type, phone=data.phone, address=data.address, tenant_id=current_user.tenant_id)
+    party = Party(
+        name=data.name,
+        party_type=data.party_type,
+        phone=data.phone,
+        address=data.address,
+        initial_balance=data.initial_balance or Decimal("0"),
+        tenant_id=current_user.tenant_id,
+    )
     db.add(party)
     db.commit()
     db.refresh(party)
@@ -79,36 +86,49 @@ def create_party_payment(
     if amount_paid <= 0:
         raise HTTPException(status_code=400, detail="Invalid payment amount")
 
-    # To check the balance without rewriting the logic, call the same summary logic.
     if party.party_type == PartyType.CLIENT:
-        invoice_type = InvoiceType.SALE
+        purchase_type = InvoiceType.SALE
+        return_type = InvoiceType.SALE_RETURN
     else:
-        invoice_type = InvoiceType.PURCHASE
+        purchase_type = InvoiceType.PURCHASE
+        return_type = InvoiceType.PURCHASE_RETURN
 
-    total_invoiced = db.execute(
+    total_purchases = Decimal(str(db.execute(
         select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
             Invoice.party_id == party_id,
-            Invoice.invoice_type == invoice_type,
+            Invoice.invoice_type == purchase_type,
             Invoice.tenant_id == current_user.tenant_id,
         )
-    ).scalar_one()
+    ).scalar_one()))
 
-    total_paid = db.execute(
+    total_returns = Decimal(str(db.execute(
+        select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
+            Invoice.party_id == party_id,
+            Invoice.invoice_type == return_type,
+            Invoice.tenant_id == current_user.tenant_id,
+        )
+    ).scalar_one()))
+
+    total_paid = Decimal(str(db.execute(
         select(func.coalesce(func.sum(Payment.amount), 0)).where(
             Payment.party_id == party_id,
         )
-    ).scalar_one()
+    ).scalar_one()))
 
-    balance = total_invoiced - total_paid
+    initial = Decimal(str(party.initial_balance or 0))
+    balance = initial + total_purchases - total_returns - total_paid
 
     if amount_paid > balance:
-        raise HTTPException(status_code=400, detail="Amount exceeds total debt")
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot pay more than the total outstanding debt.",
+        )
 
     payment = Payment(party_id=party.id, amount=amount_paid)
     db.add(payment)
     db.commit()
     db.refresh(party)
-    
+
     # Return updated summary to reflect new balance on frontend
     return party_summary(party_id, db, current_user)
 
@@ -126,25 +146,37 @@ def party_summary(
         raise HTTPException(status_code=404, detail="Party not found")
 
     if party.party_type == PartyType.CLIENT:
-        invoice_type = InvoiceType.SALE
+        purchase_type = InvoiceType.SALE
+        return_type = InvoiceType.SALE_RETURN
     else:
-        invoice_type = InvoiceType.PURCHASE
+        purchase_type = InvoiceType.PURCHASE
+        return_type = InvoiceType.PURCHASE_RETURN
 
-    total_invoiced = db.execute(
+    initial = Decimal(str(party.initial_balance or 0))
+
+    total_purchases = Decimal(str(db.execute(
         select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
             Invoice.party_id == party_id,
-            Invoice.invoice_type == invoice_type,
+            Invoice.invoice_type == purchase_type,
             Invoice.tenant_id == current_user.tenant_id,
         )
-    ).scalar_one()
+    ).scalar_one()))
 
-    total_paid = db.execute(
+    total_returns = Decimal(str(db.execute(
+        select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
+            Invoice.party_id == party_id,
+            Invoice.invoice_type == return_type,
+            Invoice.tenant_id == current_user.tenant_id,
+        )
+    ).scalar_one()))
+
+    total_paid = Decimal(str(db.execute(
         select(func.coalesce(func.sum(Payment.amount), 0)).where(
             Payment.party_id == party_id,
         )
-    ).scalar_one()
+    ).scalar_one()))
 
-    balance = total_invoiced - total_paid
+    balance = initial + total_purchases - total_returns - total_paid
 
     invoices = db.execute(
         select(Invoice).options(
@@ -252,9 +284,13 @@ def party_summary(
             "id": party.id,
             "name": party.name,
             "party_type": party.party_type.value if party.party_type else None,
+            "phone": party.phone,
+            "address": party.address,
         },
         "financials": {
-            "total_invoiced": float(total_invoiced),
+            "initial_balance": float(initial),
+            "total_purchases": float(total_purchases),
+            "total_returns": float(total_returns),
             "total_paid": float(total_paid),
             "balance": float(balance),
             "total_profit": total_profit,
@@ -262,6 +298,113 @@ def party_summary(
         "invoices": invoice_list,
         "products": product_summary,
     }
+
+
+@router.post("/{party_id}/stock-return")
+def stock_return(
+    party_id: int,
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    party = db.execute(
+        select(Party).where(Party.id == party_id, Party.tenant_id == current_user.tenant_id)
+    ).scalar_one_or_none()
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+
+    items = data.get("items", [])
+    if not items:
+        raise HTTPException(status_code=400, detail="No items provided for return")
+
+    try:
+        total_return = Decimal("0")
+        invoice_items_to_add = []
+
+        for ret in items:
+            product_id = ret.get("product_id")
+            ret_qty = Decimal(str(ret.get("quantity", 0)))
+            unit_price = Decimal(str(ret.get("unit_price", 0)))
+
+            if ret_qty <= 0 or unit_price <= 0:
+                continue
+
+            current_stock = db.execute(
+                select(func.coalesce(func.sum(StockBatch.remaining_quantity), 0)).where(
+                    StockBatch.product_id == product_id,
+                    StockBatch.tenant_id == current_user.tenant_id,
+                )
+            ).scalar_one()
+
+            if Decimal(str(current_stock)) < ret_qty:
+                product_name = db.execute(
+                    select(Product.name).where(Product.id == product_id, Product.tenant_id == current_user.tenant_id)
+                ).scalar_one_or_none() or f"Product #{product_id}"
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Insufficient stock for '{product_name}'. Available: {current_stock}, Requested: {ret_qty}",
+                )
+
+            batches = db.execute(
+                select(StockBatch).where(
+                    StockBatch.product_id == product_id,
+                    StockBatch.tenant_id == current_user.tenant_id,
+                    StockBatch.remaining_quantity > 0,
+                ).order_by(StockBatch.created_at.asc())
+            ).scalars().all()
+
+            remaining_to_deduct = ret_qty
+            used_batch_id = None
+            for batch in batches:
+                if remaining_to_deduct <= 0:
+                    break
+                deduct = min(batch.remaining_quantity, remaining_to_deduct)
+                batch.remaining_quantity -= deduct
+                remaining_to_deduct -= deduct
+                if used_batch_id is None:
+                    used_batch_id = batch.id
+
+            if used_batch_id is None:
+                raise HTTPException(status_code=400, detail="No stock batch found")
+
+            line_total = ret_qty * unit_price
+            total_return += line_total
+            invoice_items_to_add.append({
+                "batch_id": used_batch_id,
+                "quantity": ret_qty,
+                "unit_price": unit_price,
+            })
+
+        if total_return == 0:
+            raise HTTPException(status_code=400, detail="No valid return items")
+
+        return_invoice = Invoice(
+            tenant_id=current_user.tenant_id,
+            party_id=party_id,
+            invoice_type=InvoiceType.PURCHASE_RETURN if party.party_type == PartyType.SUPPLIER else InvoiceType.SALE_RETURN,
+            total_amount=total_return,
+        )
+        db.add(return_invoice)
+        db.flush()
+
+        for ii_data in invoice_items_to_add:
+            ii = InvoiceItem(
+                invoice_id=return_invoice.id,
+                batch_id=ii_data["batch_id"],
+                quantity=ii_data["quantity"],
+                unit_price=ii_data["unit_price"],
+            )
+            db.add(ii)
+
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+    return party_summary(party_id, db, current_user)
 
 
 @router.delete("/{party_id}")

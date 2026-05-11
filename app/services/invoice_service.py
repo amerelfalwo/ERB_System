@@ -2,7 +2,7 @@ from decimal import Decimal
 from typing import List, Tuple
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.constants import (
@@ -374,6 +374,36 @@ def process_return_svc(
     )
 
     try:
+        # ── Pre-flight stock check for Purchase Returns ──────────────────────
+        if return_type == INVOICE_TYPE_PURCHASE_RETURN:
+            # Aggregate requested return quantities per product
+            product_qty_map: dict = {}
+            for ret_item in data.get("items", []):
+                ret_qty = Decimal(str(ret_item.get("quantity", 0)))
+                if ret_qty <= 0:
+                    continue
+                orig_item_id = ret_item.get("invoice_item_id")
+                orig_item = invoice_repo._db.execute(
+                    select(InvoiceItem).where(InvoiceItem.id == orig_item_id)
+                ).scalar_one_or_none()
+                if orig_item and orig_item.batch:
+                    pid = orig_item.batch.product_id
+                    product_qty_map[pid] = product_qty_map.get(pid, Decimal("0")) + ret_qty
+
+            for product_id, needed_qty in product_qty_map.items():
+                current_stock = invoice_repo._db.execute(
+                    select(func.coalesce(func.sum(StockBatch.remaining_quantity), 0)).where(
+                        StockBatch.product_id == product_id,
+                        StockBatch.tenant_id == tenant_id,
+                    )
+                ).scalar_one()
+                if Decimal(str(current_stock)) < needed_qty:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Insufficient stock for this return. Available: {current_stock}, Requested: {needed_qty}",
+                    )
+        # ─────────────────────────────────────────────────────────────────────
+
         return_invoice = Invoice(
             tenant_id=tenant_id,
             party_id=orig_invoice.party_id,

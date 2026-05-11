@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -13,10 +14,11 @@ class PartyBase(BaseModel):
 
 
 class PartyCreate(PartyBase):
-    pass
+    initial_balance: Optional[Decimal] = Decimal("0")
 
 
 class PartyOut(PartyBase):
     id: int
+    initial_balance: Optional[Decimal] = Decimal("0")
 
     model_config = ConfigDict(from_attributes=True)

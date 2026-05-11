@@ -46,6 +46,7 @@ class Party(Base):
     party_type = Column(Enum(PartyType, native_enum=False))
     phone = Column(String, nullable=True, index=True)
     address = Column(Text, nullable=True)
+    initial_balance = Column(Numeric(12, 2), default=0, nullable=True)
     tenant = relationship("Tenant", back_populates="parties")
     invoices = relationship("Invoice", back_populates="party")
     payments = relationship("Payment", back_populates="party")
