@@ -54,8 +54,17 @@ class MonthlySales(BaseModel):
     sales: Decimal
     purchases: Decimal
 
+class RecentTransaction(BaseModel):
+    date: str
+    description: str
+    value: Decimal
+    status: str
+
 class DashboardAnalyticsOut(BaseModel):
     total_profit: Decimal
     stock_valuation: Decimal
     outstanding_balances: Decimal
+    customer_receivables: Decimal
+    supplier_payables: Decimal
     monthly_sales: List[MonthlySales]
+    recent_transactions: List[RecentTransaction]

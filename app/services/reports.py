@@ -15,6 +15,7 @@ from app.schemas.report import (
     StatementOut,
     DashboardAnalyticsOut,
     MonthlySales,
+    RecentTransaction,
 )
 
 
@@ -212,11 +213,18 @@ def dashboard_analytics(db: Session, tenant_id: int) -> DashboardAnalyticsOut:
     
     invoices = db.execute(select(Invoice).where(Invoice.tenant_id == tenant_id)).scalars().all()
     outstanding_balances = Decimal("0")
+    customer_receivables = Decimal("0")
+    supplier_payables = Decimal("0")
     for invoice in invoices:
         paid_total = db.execute(
             select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.invoice_id == invoice.id)
         ).scalar_one()
-        outstanding_balances += (invoice.total_amount - paid_total)
+        balance = invoice.total_amount - paid_total
+        outstanding_balances += balance
+        if invoice.invoice_type == InvoiceType.SALE:
+            customer_receivables += balance
+        elif invoice.invoice_type == InvoiceType.PURCHASE:
+            supplier_payables += balance
         
     months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     monthly_sales_dict = {m: {"sales": Decimal("0"), "purchases": Decimal("0")} for m in months}
@@ -239,9 +247,34 @@ def dashboard_analytics(db: Session, tenant_id: int) -> DashboardAnalyticsOut:
             
     monthly_sales = [MonthlySales(name=k, sales=v["sales"], purchases=v["purchases"]) for k, v in monthly_sales_dict.items()]
     
+    recent_invoices = db.execute(
+        select(Invoice).where(Invoice.tenant_id == tenant_id).order_by(Invoice.created_at.desc()).limit(8)
+    ).scalars().all()
+    
+    recent_transactions = []
+    for inv in recent_invoices:
+        desc = "Supplier Payables" if inv.invoice_type == InvoiceType.PURCHASE else "Customer Receivables" if inv.invoice_type == InvoiceType.SALE else str(inv.invoice_type.value)
+        
+        paid_total = db.execute(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.invoice_id == inv.id)
+        ).scalar_one()
+        status = "Pending" if inv.total_amount > paid_total else "Completed"
+        
+        recent_transactions.append(
+            RecentTransaction(
+                date=inv.created_at.strftime("%m/%d/%Y"),
+                description=desc,
+                value=inv.total_amount,
+                status=status
+            )
+        )
+    
     return DashboardAnalyticsOut(
         total_profit=profit_data.total_profit,
         stock_valuation=inventory_data.total_value,
         outstanding_balances=outstanding_balances,
-        monthly_sales=monthly_sales
+        customer_receivables=customer_receivables,
+        supplier_payables=supplier_payables,
+        monthly_sales=monthly_sales,
+        recent_transactions=recent_transactions
     )

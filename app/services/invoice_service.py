@@ -442,31 +442,35 @@ def process_return_svc(
                 )
                 batch_repo.add(new_batch)
                 batch_repo.flush()
-                used_batch_id = new_batch.id
+                
+                return_unit_price = orig_item.unit_price
+                new_ii = InvoiceItem(
+                    invoice_id=return_invoice.id, batch_id=new_batch.id,
+                    quantity=ret_qty, unit_price=return_unit_price,
+                    purchase_price=orig_item.purchase_price, sale_price=orig_item.sale_price,
+                )
+                invoice_repo.add(new_ii)
+                total_return += ret_qty * return_unit_price
             else:
-                if orig_batch.remaining_quantity < ret_qty:
-                    raise HTTPException(status_code=400, detail=ERR_INSUFFICIENT_STOCK)
-                orig_batch.remaining_quantity -= ret_qty
-                used_batch_id = orig_batch.id
-
-            # ── For Purchase Return: use last purchase price from product ──
-            if return_type == INVOICE_TYPE_PURCHASE_RETURN:
+                # Purchase return: use allocate_batches_svc to subtract from any available stock
+                allocations = allocate_batches_svc(batch_repo, orig_batch.product_id, ret_qty)
+                
                 product_last_price = (
                     orig_batch.product.last_purchase_price
                     if orig_batch and orig_batch.product and orig_batch.product.last_purchase_price
                     else orig_item.unit_price
                 )
                 return_unit_price = product_last_price
-            else:
-                return_unit_price = orig_item.unit_price
-
-            new_ii = InvoiceItem(
-                invoice_id=return_invoice.id, batch_id=used_batch_id,
-                quantity=ret_qty, unit_price=return_unit_price,
-                purchase_price=orig_item.purchase_price, sale_price=orig_item.sale_price,
-            )
-            invoice_repo.add(new_ii)
-            total_return += ret_qty * return_unit_price
+                
+                for batch, alloc_qty in allocations:
+                    batch.remaining_quantity -= alloc_qty
+                    new_ii = InvoiceItem(
+                        invoice_id=return_invoice.id, batch_id=batch.id,
+                        quantity=alloc_qty, unit_price=return_unit_price,
+                        purchase_price=orig_item.purchase_price, sale_price=orig_item.sale_price,
+                    )
+                    invoice_repo.add(new_ii)
+                    total_return += alloc_qty * return_unit_price
 
         if total_return == Decimal("0"):
             raise HTTPException(status_code=400, detail=ERR_NO_VALID_RETURN_ITEMS)
@@ -477,7 +481,7 @@ def process_return_svc(
             refund_payment = Payment(
                 party_id=orig_invoice.party_id,
                 invoice_id=orig_invoice.id,
-                amount=total_return
+                amount=-total_return
             )
             invoice_repo.add(refund_payment)
 

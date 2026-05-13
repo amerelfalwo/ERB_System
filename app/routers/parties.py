@@ -279,6 +279,20 @@ def party_summary(
 
     total_profit = sum(inv.get("invoice_profit", 0) for inv in invoice_list)
 
+    payments = db.execute(
+        select(Payment).where(Payment.party_id == party_id).order_by(Payment.payment_date.desc())
+    ).scalars().all()
+
+    payment_list = [
+        {
+            "id": p.id,
+            "invoice_id": p.invoice_id,
+            "amount": float(p.amount),
+            "payment_date": p.payment_date.isoformat() if p.payment_date else None,
+        }
+        for p in payments
+    ]
+
     return {
         "party": {
             "id": party.id,
@@ -297,6 +311,7 @@ def party_summary(
         },
         "invoices": invoice_list,
         "products": product_summary,
+        "payments": payment_list,
     }
 
 
@@ -432,3 +447,63 @@ def delete_party(
     db.delete(party)
     db.commit()
     return {"status": "deleted"}
+
+
+@router.patch("/{party_id}/payments/{payment_id}")
+def update_party_payment(
+    party_id: int,
+    payment_id: int,
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    party = db.execute(
+        select(Party).where(Party.id == party_id, Party.tenant_id == current_user.tenant_id)
+    ).scalar_one_or_none()
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+
+    payment = db.execute(
+        select(Payment).where(Payment.id == payment_id, Payment.party_id == party_id)
+    ).scalar_one_or_none()
+    
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+
+    new_amount = Decimal(str(data.get("amount", payment.amount)))
+    if new_amount <= 0:
+        raise HTTPException(status_code=400, detail="Invalid payment amount")
+
+    payment.amount = new_amount
+    if "payment_date" in data:
+        payment.payment_date = data["payment_date"]
+
+    db.commit()
+    db.refresh(party)
+    return party_summary(party_id, db, current_user)
+
+
+@router.delete("/{party_id}/payments/{payment_id}")
+def delete_party_payment(
+    party_id: int,
+    payment_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    party = db.execute(
+        select(Party).where(Party.id == party_id, Party.tenant_id == current_user.tenant_id)
+    ).scalar_one_or_none()
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+
+    payment = db.execute(
+        select(Payment).where(Payment.id == payment_id, Payment.party_id == party_id)
+    ).scalar_one_or_none()
+    
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+
+    db.delete(payment)
+    db.commit()
+    db.refresh(party)
+    return party_summary(party_id, db, current_user)
