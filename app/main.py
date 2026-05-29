@@ -55,7 +55,11 @@ async def lifespan(app: FastAPI):
         "ALTER TABLE stock_batches ADD COLUMN IF NOT EXISTS party_id INTEGER REFERENCES parties(id);"
     ]
 
-    with open("/mnt/work/ERB/migration_run.log", "w") as log_file:
+    log_dir = BASE_DIR / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file_path = log_dir / "migration_run.log"
+
+    with open(log_file_path, "w") as log_file:
         log_file.write("Starting migrations...\n")
         for migration in migrations:
             try:
