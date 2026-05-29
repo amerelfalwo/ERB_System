@@ -6,10 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.domain import Invoice, InvoiceItem, InvoiceType, Product, StockBatch, Payment
-from app.schemas.invoice import InvoiceCreatePurchase, InvoiceCreateSale
+from app.schemas.invoice import InvoiceCreatePurchase, InvoiceCreateSell
 
 
-def create_purchase_invoice(db: Session, data: InvoiceCreatePurchase, tenant_id: int) -> Invoice:
+def create_purchase_invoice(db: Session, data: InvoiceCreatePurchase, tenant_id: int = None) -> Invoice:
     try:
         invoice = Invoice(
             party_id=data.party_id,
@@ -41,7 +41,7 @@ def create_purchase_invoice(db: Session, data: InvoiceCreatePurchase, tenant_id:
                 quantity=item.quantity,
                 unit_price=item.purchase_price,
                 purchase_price=item.purchase_price,
-                sale_price=item.selling_price,
+                sell_price=item.selling_price,
             )
             db.add(invoice_item)
             total += item.purchase_price * item.quantity
@@ -107,11 +107,11 @@ def get_latest_selling_price(db: Session, tenant_id: int, product_id: int) -> De
     return price
 
 
-def create_sale_invoice(db: Session, data: InvoiceCreateSale, tenant_id: int) -> Invoice:
+def create_sell_invoice(db: Session, data: InvoiceCreateSell, tenant_id: int = None) -> Invoice:
     try:
         invoice = Invoice(
             party_id=data.party_id,
-            invoice_type=InvoiceType.SALE,
+            invoice_type=InvoiceType.SELL,
             total_amount=Decimal("0"),
             delivery_fee=data.delivery_fee,
             footer_custom_text=data.footer_custom_text,
@@ -123,7 +123,7 @@ def create_sale_invoice(db: Session, data: InvoiceCreateSale, tenant_id: int) ->
         total = Decimal("0")
         for item in data.items:
             latest_price = get_latest_selling_price(db, tenant_id, item.product_id)
-            effective_price = Decimal(str(item.sale_price)) if item.sale_price is not None else latest_price
+            effective_price = Decimal(str(item.sell_price)) if item.sell_price is not None else latest_price
             allocations = allocate_batches(db, tenant_id, item.product_id, item.quantity)
             for batch, qty in allocations:
                 batch.remaining_quantity = batch.remaining_quantity - qty
@@ -133,7 +133,7 @@ def create_sale_invoice(db: Session, data: InvoiceCreateSale, tenant_id: int) ->
                     quantity=qty,
                     unit_price=effective_price,
                     purchase_price=batch.purchase_price,
-                    sale_price=effective_price,
+                    sell_price=effective_price,
                 )
                 db.add(invoice_item)
                 total += effective_price * qty
@@ -148,6 +148,10 @@ def create_sale_invoice(db: Session, data: InvoiceCreateSale, tenant_id: int) ->
     except Exception:
         db.rollback()
         raise
+
+
+# Backwards-compatible alias
+create_sale_invoice = create_sell_invoice
 
 
 def ensure_product_exists(db: Session, product_id: int, tenant_id: int) -> None:

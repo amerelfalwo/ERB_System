@@ -1,9 +1,37 @@
-from .auth import router as auth
-from .batches import router as batches
-from .invoices import router as invoices
-from .parties import router as parties
-from .payments import router as payments
-from .products import router as products
-from .templates import router as templates
-from .reports import router as reports
-from .tenants import router as tenants
+"""
+app/routers  –  Backward-compatibility shim
+============================================
+All routers have been moved to ``app.api``.
+This module re-exports them so that any existing imports from
+``app.routers`` continue to work without change.
+
+New code should import directly from ``app.api``.
+"""
+
+from app.api import (  # noqa: F401
+    auth,
+    batches,
+    customers,
+    invoices,
+    parties,
+    payments,
+    products,
+    suppliers,
+    templates,
+    reports,
+    tenants,
+)
+
+__all__ = [
+    "auth",
+    "batches",
+    "customers",
+    "invoices",
+    "parties",
+    "payments",
+    "products",
+    "suppliers",
+    "templates",
+    "reports",
+    "tenants",
+]

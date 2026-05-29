@@ -19,4 +19,6 @@ def add_payment(
     try:
         return create_payment(db, data, current_user.tenant_id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        if "not found" in str(exc).lower():
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))

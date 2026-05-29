@@ -2,14 +2,14 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.domain import Invoice, InvoiceItem, InvoiceType, Party, PartyType, Payment, Product, StockBatch, User
 from app.repositories.base import PartyRepository
-from app.schemas.party import PartyCreate, PartyOut
-from app.services.payments import get_party_balance
+from app.schemas.party import PartyCreate, PartyOut, PartyUpdate
+from app.services.payments import get_party_balance, get_parties_balances
 
 router = APIRouter(prefix="/parties", tags=["parties"])
 
@@ -31,6 +31,7 @@ def create_party(
     db.add(party)
     db.commit()
     db.refresh(party)
+    party.calculated_balance = party.initial_balance
     return party
 
 
@@ -42,7 +43,14 @@ def list_parties(
     current_user: User = Depends(get_current_user),
 ):
     party_repo = PartyRepository(db, current_user.tenant_id)
-    return party_repo.list(skip=skip, limit=limit)
+    parties = party_repo.list(skip=skip, limit=limit)
+    if parties:
+        party_ids = [p.id for p in parties]
+        balances = get_parties_balances(db, party_ids, current_user.tenant_id)
+        for p in parties:
+            p.calculated_balance = balances.get(p.id, Decimal("0"))
+    return parties
+
 
 
 @router.get("/select")
@@ -52,6 +60,149 @@ def list_parties_select(
 ):
     party_repo = PartyRepository(db, current_user.tenant_id)
     return party_repo.get_all_for_select()
+
+
+@router.get("/suppliers", response_model=list[PartyOut])
+def list_suppliers(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    parties = db.execute(
+        select(Party).where(
+            Party.tenant_id == current_user.tenant_id,
+            Party.party_type == PartyType.SUPPLIER,
+        ).offset(skip).limit(limit)
+    ).scalars().all()
+    if parties:
+        party_ids = [p.id for p in parties]
+        balances = get_parties_balances(db, party_ids, current_user.tenant_id)
+        for p in parties:
+            p.calculated_balance = balances.get(p.id, Decimal("0"))
+    return parties
+
+
+@router.post("/suppliers", response_model=PartyOut)
+def create_supplier(
+    data: PartyCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    party = Party(
+        name=data.name,
+        party_type=PartyType.SUPPLIER,
+        phone=data.phone,
+        address=data.address,
+        initial_balance=data.initial_balance or Decimal("0"),
+        tenant_id=current_user.tenant_id,
+    )
+    db.add(party)
+    db.commit()
+    db.refresh(party)
+    party.calculated_balance = party.initial_balance
+    return party
+
+
+
+@router.get("/suppliers/select")
+def list_suppliers_select(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rows = db.execute(
+        select(Party.id, Party.name).where(
+            Party.tenant_id == current_user.tenant_id,
+            Party.party_type == PartyType.SUPPLIER,
+        )
+    ).all()
+    return [{"id": r.id, "name": r.name} for r in rows]
+
+
+@router.get("/customers", response_model=list[PartyOut])
+def list_customers(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    parties = db.execute(
+        select(Party).where(
+            Party.tenant_id == current_user.tenant_id,
+            Party.party_type == PartyType.CLIENT,
+        ).offset(skip).limit(limit)
+    ).scalars().all()
+    if parties:
+        party_ids = [p.id for p in parties]
+        balances = get_parties_balances(db, party_ids, current_user.tenant_id)
+        for p in parties:
+            p.calculated_balance = balances.get(p.id, Decimal("0"))
+    return parties
+
+
+@router.post("/customers", response_model=PartyOut)
+def create_customer(
+    data: PartyCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    party = Party(
+        name=data.name,
+        party_type=PartyType.CLIENT,
+        phone=data.phone,
+        address=data.address,
+        initial_balance=data.initial_balance or Decimal("0"),
+        tenant_id=current_user.tenant_id,
+    )
+    db.add(party)
+    db.commit()
+    db.refresh(party)
+    party.calculated_balance = party.initial_balance
+    return party
+
+
+
+@router.get("/customers/select")
+def list_customers_select(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rows = db.execute(
+        select(Party.id, Party.name).where(
+            Party.tenant_id == current_user.tenant_id,
+            Party.party_type == PartyType.CLIENT,
+        )
+    ).all()
+    return [{"id": r.id, "name": r.name} for r in rows]
+
+
+@router.put("/{party_id}", response_model=PartyOut)
+def update_party(
+    party_id: int,
+    data: PartyUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    party = db.execute(
+        select(Party).where(Party.id == party_id, Party.tenant_id == current_user.tenant_id)
+    ).scalar_one_or_none()
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+
+    if data.name is not None:
+        party.name = data.name
+    if data.phone is not None:
+        party.phone = data.phone
+    if data.address is not None:
+        party.address = data.address
+    if data.initial_balance is not None:
+        party.initial_balance = data.initial_balance
+
+    db.commit()
+    db.refresh(party)
+    party.calculated_balance = get_party_balance(db, party_id, current_user.tenant_id)
+    return party
+
 
 
 @router.get("/{party_id}/balance")
@@ -87,8 +238,8 @@ def create_party_payment(
         raise HTTPException(status_code=400, detail="Invalid payment amount")
 
     if party.party_type == PartyType.CLIENT:
-        purchase_type = InvoiceType.SALE
-        return_type = InvoiceType.SALE_RETURN
+        purchase_type = InvoiceType.SELL
+        return_type = InvoiceType.SELL_RETURN
     else:
         purchase_type = InvoiceType.PURCHASE
         return_type = InvoiceType.PURCHASE_RETURN
@@ -129,7 +280,6 @@ def create_party_payment(
     db.commit()
     db.refresh(party)
 
-    # Return updated summary to reflect new balance on frontend
     return party_summary(party_id, db, current_user)
 
 
@@ -146,8 +296,8 @@ def party_summary(
         raise HTTPException(status_code=404, detail="Party not found")
 
     if party.party_type == PartyType.CLIENT:
-        purchase_type = InvoiceType.SALE
-        return_type = InvoiceType.SALE_RETURN
+        purchase_type = InvoiceType.SELL
+        return_type = InvoiceType.SELL_RETURN
     else:
         purchase_type = InvoiceType.PURCHASE
         return_type = InvoiceType.PURCHASE_RETURN
@@ -180,7 +330,7 @@ def party_summary(
 
     invoices = db.execute(
         select(Invoice).options(
-            joinedload(Invoice.items).joinedload(InvoiceItem.batch).joinedload(StockBatch.product)
+            selectinload(Invoice.items).joinedload(InvoiceItem.batch).joinedload(StockBatch.product)
         ).where(
             Invoice.party_id == party_id,
             Invoice.tenant_id == current_user.tenant_id,
@@ -210,14 +360,13 @@ def party_summary(
         else:
             status = "unpaid"
 
-        # Calculate per-invoice profit (for SALE invoices)
         inv_profit = Decimal("0")
-        if inv.invoice_type == InvoiceType.SALE:
+        if inv.invoice_type == InvoiceType.SELL:
             for item in inv.items:
                 cost = item.purchase_price if item.purchase_price is not None else (
                     item.batch.purchase_price if item.batch else Decimal("0")
                 )
-                sale = item.sale_price if item.sale_price is not None else item.unit_price
+                sale = item.sell_price if item.sell_price is not None else item.unit_price
                 inv_profit += (sale - cost) * item.quantity
 
         invoice_list.append({
@@ -237,7 +386,7 @@ def party_summary(
                     "quantity": float(item.quantity),
                     "unit_price": float(item.unit_price),
                     "purchase_price": float(item.purchase_price) if item.purchase_price else None,
-                    "sale_price": float(item.sale_price) if item.sale_price else None,
+                    "sell_price": float(item.sell_price) if item.sell_price else None,
                     "product_name": item.batch.product.name if item.batch and item.batch.product else None,
                 }
                 for item in inv.items
@@ -245,10 +394,14 @@ def party_summary(
         })
 
     product_ids = set()
+    last_purchase_prices = {}
     for inv in invoices:
         for item in inv.items:
             if item.batch and item.batch.product_id:
-                product_ids.add(item.batch.product_id)
+                pid = item.batch.product_id
+                product_ids.add(pid)
+                if inv.invoice_type == InvoiceType.PURCHASE and pid not in last_purchase_prices:
+                    last_purchase_prices[pid] = item.unit_price
 
     product_summary = []
     if product_ids:
@@ -268,13 +421,26 @@ def party_summary(
             .group_by(StockBatch.product_id)
         ).all()
         
+        supplier_stock_sums = db.execute(
+            select(StockBatch.product_id, func.coalesce(func.sum(StockBatch.remaining_quantity), 0))
+            .where(
+                StockBatch.product_id.in_(product_ids), 
+                StockBatch.tenant_id == current_user.tenant_id,
+                StockBatch.party_id == party_id
+            )
+            .group_by(StockBatch.product_id)
+        ).all()
+        
         stock_map = {pid: qty for pid, qty in stock_sums}
+        supplier_stock_map = {pid: qty for pid, qty in supplier_stock_sums}
         
         for p in products:
             product_summary.append({
                 "id": p.id,
                 "name": p.name,
                 "remaining_stock": float(stock_map.get(p.id, 0)),
+                "supplier_stock": float(supplier_stock_map.get(p.id, 0)),
+                "last_purchase_price": float(last_purchase_prices.get(p.id, 0)),
             })
 
     total_profit = sum(inv.get("invoice_profit", 0) for inv in invoice_list)
@@ -300,6 +466,7 @@ def party_summary(
             "party_type": party.party_type.value if party.party_type else None,
             "phone": party.phone,
             "address": party.address,
+            "initial_balance": float(initial),
         },
         "financials": {
             "initial_balance": float(initial),
@@ -348,6 +515,7 @@ def stock_return(
                 select(func.coalesce(func.sum(StockBatch.remaining_quantity), 0)).where(
                     StockBatch.product_id == product_id,
                     StockBatch.tenant_id == current_user.tenant_id,
+                    StockBatch.party_id == party_id
                 )
             ).scalar_one()
 
@@ -357,15 +525,16 @@ def stock_return(
                 ).scalar_one_or_none() or f"Product #{product_id}"
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Insufficient stock for '{product_name}'. Available: {current_stock}, Requested: {ret_qty}",
+                    detail=f"Insufficient stock from this supplier for '{product_name}'. Available: {current_stock}, Requested: {ret_qty}",
                 )
 
             batches = db.execute(
                 select(StockBatch).where(
                     StockBatch.product_id == product_id,
                     StockBatch.tenant_id == current_user.tenant_id,
+                    StockBatch.party_id == party_id,
                     StockBatch.remaining_quantity > 0,
-                ).order_by(StockBatch.created_at.asc())
+                ).order_by(StockBatch.created_at.desc())
             ).scalars().all()
 
             remaining_to_deduct = ret_qty
@@ -396,7 +565,7 @@ def stock_return(
         return_invoice = Invoice(
             tenant_id=current_user.tenant_id,
             party_id=party_id,
-            invoice_type=InvoiceType.PURCHASE_RETURN if party.party_type == PartyType.SUPPLIER else InvoiceType.SALE_RETURN,
+            invoice_type=InvoiceType.PURCHASE_RETURN if party.party_type == PartyType.SUPPLIER else InvoiceType.SELL_RETURN,
             total_amount=total_return,
         )
         db.add(return_invoice)

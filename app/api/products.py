@@ -8,11 +8,24 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import get_current_user
-from app.models.domain import Invoice, InvoiceItem, InvoiceType, Product, StockBatch, User
+from app.models.domain import Invoice, InvoiceItem, InvoiceType, Product, StockBatch, User, Party
 from app.repositories.base import ProductRepository
 from app.schemas.product import ProductCreate
 
+from sqlalchemy import text
 router = APIRouter(prefix="/products", tags=["products"])
+
+@router.get("/migrate-party")
+def migrate_party(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("ALTER TABLE stock_batches ADD COLUMN party_id INTEGER REFERENCES parties(id) NULL"))
+        db.execute(text("CREATE INDEX ix_stock_batches_party_id ON stock_batches (party_id)"))
+        db.commit()
+        return "done"
+    except Exception as e:
+        db.rollback()
+        return str(e)
+
 
 
 class ProductWithCostOut(BaseModel):
@@ -23,6 +36,7 @@ class ProductWithCostOut(BaseModel):
     sell_price: Optional[float] = 0.0
     current_cost: Optional[float] = None
     current_selling_price: Optional[float] = None
+    supplier_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -98,6 +112,7 @@ def create_product(
         sell_price=float(product.sell_price or 0),
         current_cost=None,
         current_selling_price=None,
+        supplier_name=None,
     )
 
 
@@ -108,13 +123,103 @@ def list_products(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    from collections import defaultdict
+
     prod_repo = ProductRepository(db, current_user.tenant_id)
     products = prod_repo.list(skip=skip, limit=limit)
+    if not products:
+        return []
+
+    product_ids = [p.id for p in products]
+    tenant_id = current_user.tenant_id
+
+    # 1. Fetch active batches in bulk
+    batches = db.execute(
+        select(StockBatch)
+        .where(
+            StockBatch.product_id.in_(product_ids),
+            StockBatch.tenant_id == tenant_id,
+            StockBatch.remaining_quantity > 0,
+        )
+        .order_by(StockBatch.created_at.asc(), StockBatch.id.asc())
+    ).scalars().all()
+
+    active_batches_by_product = defaultdict(list)
+    for batch in batches:
+        active_batches_by_product[batch.product_id].append(batch)
+
+    # 2. For products without active batches, fetch fallback last purchase price
+    fallback_products = [pid for pid in product_ids if not active_batches_by_product[pid]]
+    last_purchase_prices_dict = {}
+    if fallback_products:
+        subq = (
+            select(
+                StockBatch.product_id,
+                func.max(InvoiceItem.id).label("max_item_id")
+            )
+            .join(InvoiceItem, StockBatch.id == InvoiceItem.batch_id)
+            .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+            .where(
+                Invoice.invoice_type == InvoiceType.PURCHASE,
+                Invoice.tenant_id == tenant_id,
+                StockBatch.product_id.in_(fallback_products)
+            )
+            .group_by(StockBatch.product_id)
+            .subquery()
+        )
+
+        stmt = (
+            select(
+                StockBatch.product_id,
+                InvoiceItem.purchase_price
+            )
+            .join(InvoiceItem, StockBatch.id == InvoiceItem.batch_id)
+            .join(subq, (StockBatch.product_id == subq.c.product_id) & (InvoiceItem.id == subq.c.max_item_id))
+        )
+        fallback_rows = db.execute(stmt).all()
+        last_purchase_prices_dict = {row.product_id: row.purchase_price for row in fallback_rows}
+
+    # 3. Fetch the latest supplier for all products
+    supplier_subq = (
+        select(
+            StockBatch.product_id,
+            func.max(InvoiceItem.id).label("max_item_id")
+        )
+        .join(InvoiceItem, StockBatch.id == InvoiceItem.batch_id)
+        .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+        .where(
+            Invoice.invoice_type == InvoiceType.PURCHASE,
+            Invoice.tenant_id == tenant_id,
+            StockBatch.product_id.in_(product_ids)
+        )
+        .group_by(StockBatch.product_id)
+        .subquery()
+    )
+
+    supplier_stmt = (
+        select(
+            StockBatch.product_id,
+            Party.name
+        )
+        .join(InvoiceItem, StockBatch.id == InvoiceItem.batch_id)
+        .join(supplier_subq, (StockBatch.product_id == supplier_subq.c.product_id) & (InvoiceItem.id == supplier_subq.c.max_item_id))
+        .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+        .join(Party, Party.id == Invoice.party_id)
+    )
+    supplier_rows = db.execute(supplier_stmt).all()
+    supplier_dict = {row.product_id: row.name for row in supplier_rows}
 
     result = []
     for product in products:
-        cost = _get_current_cost(db, product.id, current_user.tenant_id)
-        sell = _get_current_selling_price(db, product.id, current_user.tenant_id)
+        product_batches = active_batches_by_product[product.id]
+        if product_batches:
+            cost = product_batches[0].purchase_price
+            valid_selling_prices = [b.current_selling_price for b in product_batches if b.current_selling_price is not None]
+            sell = max(valid_selling_prices) if valid_selling_prices else None
+        else:
+            cost = last_purchase_prices_dict.get(product.id)
+            sell = None
+
         result.append(
             ProductWithCostOut(
                 id=product.id,
@@ -124,6 +229,7 @@ def list_products(
                 sell_price=float(product.sell_price or 0),
                 current_cost=float(cost) if cost is not None else None,
                 current_selling_price=float(sell) if sell is not None else None,
+                supplier_name=supplier_dict.get(product.id)
             )
         )
     return result
@@ -198,4 +304,5 @@ def update_product(
         sell_price=float(product.sell_price or 0),
         current_cost=float(cost) if cost is not None else None,
         current_selling_price=float(sell) if sell is not None else None,
+        supplier_name=None,  # Or re-calculate if needed, but updating product doesn't change supplier
     )

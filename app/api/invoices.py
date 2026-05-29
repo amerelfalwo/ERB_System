@@ -7,15 +7,16 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.constants import (
     ERR_INVOICE_NOT_FOUND, ERR_PARTY_NOT_FOUND, ERR_PRODUCT_NOT_FOUND,
-    INVOICE_TYPE_SALE, INVOICE_TYPE_PURCHASE,
+    INVOICE_TYPE_SELL, INVOICE_TYPE_PURCHASE,
 )
-from app.models.domain import User
+from app.models.domain import User, InvoiceItem
+from sqlalchemy import select, func
 from app.repositories.base import (
     BatchRepository, InvoiceRepository, PartyRepository, ProductRepository, PaymentRepository
 )
-from app.schemas.invoice import InvoiceCreatePurchase, InvoiceCreateSale, InvoiceItemOut, InvoiceOut
+from app.schemas.invoice import InvoiceCreatePurchase, InvoiceCreateSell, InvoiceItemOut, InvoiceOut
 from app.services.invoice_service import (
-    list_invoices_svc, create_purchase_invoice_svc, create_sale_invoice_svc,
+    list_invoices_svc, create_purchase_invoice_svc, create_sell_invoice_svc,
     update_invoice_svc, delete_invoice_svc, process_return_svc,
     get_invoice_totals_svc, get_party_previous_balance_svc,
 )
@@ -25,8 +26,19 @@ router = APIRouter(prefix="/invoices", tags=["invoices"])
 
 def _invoice_out(invoice, invoice_repo: InvoiceRepository, party_repo: PartyRepository) -> InvoiceOut:
     totals = get_invoice_totals_svc(invoice_repo, invoice)
-    inv_type = INVOICE_TYPE_SALE if invoice.invoice_type == INVOICE_TYPE_SALE else INVOICE_TYPE_PURCHASE
+    inv_type = INVOICE_TYPE_SELL if invoice.invoice_type == INVOICE_TYPE_SELL else INVOICE_TYPE_PURCHASE
     prev_balance = get_party_previous_balance_svc(party_repo, invoice.party_id, invoice.id, inv_type)
+
+    # Bulk fetch already returned quantities for all invoice items in one query
+    item_ids = [item.id for item in invoice.items]
+    returned_qty_map = {}
+    if item_ids:
+        rows = invoice_repo._db.execute(
+            select(InvoiceItem.original_invoice_item_id, func.sum(InvoiceItem.quantity))
+            .where(InvoiceItem.original_invoice_item_id.in_(item_ids))
+            .group_by(InvoiceItem.original_invoice_item_id)
+        ).all()
+        returned_qty_map = {orig_id: qty for orig_id, qty in rows}
 
     # Resolve product_name for each item via batch → product relationship
     items_out = []
@@ -34,19 +46,28 @@ def _invoice_out(invoice, invoice_repo: InvoiceRepository, party_repo: PartyRepo
         product_name = None
         if item.batch and item.batch.product:
             product_name = item.batch.product.name
+            
+        already_returned_qty = returned_qty_map.get(item.id, Decimal("0"))
+        
         items_out.append(InvoiceItemOut(
             id=item.id,
             batch_id=item.batch_id,
             quantity=item.quantity,
             unit_price=item.unit_price,
             purchase_price=item.purchase_price,
-            sale_price=item.sale_price,
+            sell_price=item.sell_price,
             product_name=product_name,
+            already_returned_qty=already_returned_qty,
+            original_invoice_item_id=item.original_invoice_item_id,
         ))
+
+    party = party_repo.get_by_id(invoice.party_id)
+    party_name = party.name if party else None
 
     return InvoiceOut(
         id=invoice.id,
         party_id=invoice.party_id,
+        party_name=party_name,
         invoice_type=invoice.invoice_type,
         total_amount=invoice.total_amount,
         delivery_fee=invoice.delivery_fee or Decimal("0"),
@@ -64,13 +85,14 @@ def _invoice_out(invoice, invoice_repo: InvoiceRepository, party_repo: PartyRepo
 @router.get("")
 def list_invoices(
     party_id: int = None,
+    invoice_type: str = None,
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     inv_repo = InvoiceRepository(db, current_user.tenant_id)
-    return list_invoices_svc(inv_repo, party_id=party_id, skip=skip, limit=limit)
+    return list_invoices_svc(inv_repo, party_id=party_id, invoice_type=invoice_type, skip=skip, limit=limit)
 
 
 @router.post("/purchase", response_model=InvoiceOut)
@@ -95,9 +117,9 @@ def purchase_invoice(
     return _invoice_out(invoice, inv_repo, party_repo)
 
 
-@router.post("/sale", response_model=InvoiceOut)
-def sale_invoice(
-    data: InvoiceCreateSale,
+@router.post("/sell", response_model=InvoiceOut)
+def sell_invoice(
+    data: InvoiceCreateSell,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -113,7 +135,7 @@ def sale_invoice(
     if product_ids and prod_repo.count_by_ids(product_ids) != len(set(product_ids)):
         raise HTTPException(status_code=404, detail=ERR_PRODUCT_NOT_FOUND)
 
-    invoice = create_sale_invoice_svc(inv_repo, batch_repo, data, current_user.tenant_id)
+    invoice = create_sell_invoice_svc(inv_repo, batch_repo, data, current_user.tenant_id)
     return _invoice_out(invoice, inv_repo, party_repo)
 
 

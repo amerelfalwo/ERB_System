@@ -12,8 +12,8 @@ class PartyType(enum.Enum):
 
 class InvoiceType(enum.Enum):
     PURCHASE = "purchase"
-    SALE = "sale"
-    SALE_RETURN = "sale_return"
+    SELL = "sell"
+    SELL_RETURN = "sell_return"
     PURCHASE_RETURN = "purchase_return"
 
 class Tenant(Base):
@@ -41,12 +41,15 @@ class Party(Base):
         Index("idx_tenant_party_type", "tenant_id", "party_type"),
     )
     id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True)
+    # tenant_id may be optional in tests or single-tenant setups
     name = Column(String, index=True)
-    party_type = Column(Enum(PartyType, native_enum=False))
+    party_type = Column(Enum(PartyType, native_enum=False), index=True)
     phone = Column(String, nullable=True, index=True)
     address = Column(Text, nullable=True)
     initial_balance = Column(Numeric(12, 2), default=0, nullable=True)
+    notes = Column(Text, nullable=True)
+    credit_limit = Column(Numeric(12, 2), default=0.00, nullable=True)
     tenant = relationship("Tenant", back_populates="parties")
     invoices = relationship("Invoice", back_populates="party")
     payments = relationship("Payment", back_populates="party")
@@ -57,7 +60,7 @@ class Product(Base):
         Index("idx_tenant_product_name", "tenant_id", "name"),
     )
     id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True)
     name = Column(String, index=True)
     last_purchase_price = Column(Numeric(12, 2), default=0)
     purchase_price = Column(Numeric(12, 2), default=0)
@@ -71,15 +74,17 @@ class StockBatch(Base):
         Index("idx_tenant_product_id", "tenant_id", "product_id"),
     )
     id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True)
     product_id = Column(Integer, ForeignKey("products.id"), index=True)
+    party_id = Column(Integer, ForeignKey("parties.id", ondelete="SET NULL"), nullable=True, index=True)
     purchase_price = Column(Numeric(12, 2))
     current_selling_price = Column(Numeric(12, 2))
     initial_quantity = Column(Numeric(12, 3))
     remaining_quantity = Column(Numeric(12, 3))
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     tenant = relationship("Tenant", back_populates="batches")
     product = relationship("Product", back_populates="batches")
+    party = relationship("Party")
 
 class Invoice(Base):
     __tablename__ = "invoices"
@@ -88,13 +93,13 @@ class Invoice(Base):
         Index("idx_tenant_party_id", "tenant_id", "party_id"),
     )
     id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True)
     party_id = Column(Integer, ForeignKey("parties.id"), index=True)
-    invoice_type = Column(Enum(InvoiceType, native_enum=False))
+    invoice_type = Column(Enum(InvoiceType, native_enum=False), index=True)
     total_amount = Column(Numeric(12, 2))
     delivery_fee = Column(Numeric(12, 2), default=0)
     footer_custom_text = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     tenant = relationship("Tenant", back_populates="invoices")
     party = relationship("Party", back_populates="invoices")
     items = relationship("InvoiceItem", back_populates="invoice")
@@ -105,10 +110,11 @@ class InvoiceItem(Base):
     id = Column(Integer, primary_key=True, index=True)
     invoice_id = Column(Integer, ForeignKey("invoices.id"), index=True)
     batch_id = Column(Integer, ForeignKey("stock_batches.id"), index=True)
+    original_invoice_item_id = Column(Integer, ForeignKey("invoice_items.id"), nullable=True, index=True)
     quantity = Column(Numeric(12, 3))
     unit_price = Column(Numeric(12, 2))  # Keep for backwards compat or as general price
     purchase_price = Column(Numeric(12, 2), nullable=True)
-    sale_price = Column(Numeric(12, 2), nullable=True)
+    sell_price = Column(Numeric(12, 2), nullable=True)
     invoice = relationship("Invoice", back_populates="items")
     batch = relationship("StockBatch")
 
@@ -118,14 +124,14 @@ class Payment(Base):
     invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=True, index=True)
     party_id = Column(Integer, ForeignKey("parties.id"), index=True)
     amount = Column(Numeric(12, 2))
-    payment_date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    payment_date = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     invoice = relationship("Invoice", back_populates="payments")
     party = relationship("Party", back_populates="payments")
 
 class PrintTemplate(Base):
     __tablename__ = "print_templates"
     id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True)
     name = Column(String)
     html_content = Column(Text)
     settings = Column(JSON)

@@ -9,12 +9,12 @@ from app.core.constants import (
     ERR_INSUFFICIENT_STOCK, ERR_NO_VALID_RETURN_ITEMS, ERR_RETURN_QTY_EXCEEDS,
     ERR_CANNOT_DELETE_HAS_STOCK, ERR_CANNOT_MODIFY_RETURN,
     ERR_CANNOT_MODIFY_PURCHASE_COUNT, ERR_INVALID_INVOICE_TYPE, ERR_INVALID_ITEM,
-    INVOICE_TYPE_SALE, INVOICE_TYPE_PURCHASE, INVOICE_TYPE_SALE_RETURN,
+    INVOICE_TYPE_SELL, INVOICE_TYPE_PURCHASE, INVOICE_TYPE_SELL_RETURN,
     INVOICE_TYPE_PURCHASE_RETURN, STATUS_PAID, STATUS_PARTIAL, STATUS_UNPAID,
 )
 from app.models.domain import Invoice, InvoiceItem, InvoiceType, Payment, Product, StockBatch
 from app.repositories.base import BatchRepository, InvoiceRepository, PartyRepository
-from app.schemas.invoice import InvoiceCreatePurchase, InvoiceCreateSale
+from app.schemas.invoice import InvoiceCreatePurchase, InvoiceCreateSell
 
 
 def _invoice_status(paid: Decimal, total: Decimal) -> str:
@@ -26,21 +26,22 @@ def _invoice_status(paid: Decimal, total: Decimal) -> str:
     return STATUS_UNPAID
 
 
-def _build_invoice_dict(inv: Invoice, paid: Decimal) -> dict:
+def _build_invoice_dict(inv: Invoice, paid: Decimal, party_name_map: dict = None, returned_qty_map: dict = None) -> dict:
     balance = inv.total_amount - paid
     profit = Decimal("0")
-    if inv.invoice_type == INVOICE_TYPE_SALE:
+    if inv.invoice_type == INVOICE_TYPE_SELL:
         for item in inv.items:
             cost = item.purchase_price if item.purchase_price is not None else (
                 item.batch.purchase_price if item.batch else Decimal("0")
             )
-            sale = item.sale_price if item.sale_price is not None else item.unit_price
-            profit += (sale - cost) * item.quantity
+            sell = item.sell_price if item.sell_price is not None else item.unit_price
+            profit += (sell - cost) * item.quantity
         profit -= inv.delivery_fee or Decimal("0")
 
     return {
         "id": inv.id,
         "party_id": inv.party_id,
+        "party_name": (party_name_map or {}).get(inv.party_id) if party_name_map is not None else (inv.party.name if inv.party else None),
         "invoice_type": inv.invoice_type.value if inv.invoice_type else None,
         "total_amount": float(inv.total_amount),
         "delivery_fee": float(inv.delivery_fee) if inv.delivery_fee else 0,
@@ -58,8 +59,10 @@ def _build_invoice_dict(inv: Invoice, paid: Decimal) -> dict:
                 "quantity": float(item.quantity),
                 "unit_price": float(item.unit_price),
                 "purchase_price": float(item.purchase_price) if item.purchase_price else None,
-                "sale_price": float(item.sale_price) if item.sale_price else None,
+                "sell_price": float(item.sell_price) if item.sell_price else None,
                 "product_name": item.batch.product.name if item.batch and item.batch.product else None,
+                "already_returned_qty": float(returned_qty_map.get(item.id, 0)) if returned_qty_map else 0.0,
+                "original_invoice_item_id": item.original_invoice_item_id,
             }
             for item in inv.items
         ],
@@ -83,7 +86,7 @@ def get_party_previous_balance_svc(
     invoice_id: int,
     invoice_type: InvoiceType,
 ) -> Decimal:
-    if invoice_type == INVOICE_TYPE_SALE:
+    if invoice_type == INVOICE_TYPE_SELL:
         inv_total = party_repo.total_invoiced_net_excluding(party_id, invoice_id)
     else:
         inv_total = party_repo.total_invoiced_excluding(party_id, invoice_type, invoice_id)
@@ -91,11 +94,26 @@ def get_party_previous_balance_svc(
     return max(Decimal("0"), inv_total - paid_total)
 
 
-def list_invoices_svc(invoice_repo: InvoiceRepository, party_id=None, skip: int = 0, limit: int = 100) -> list:
-    invoices = invoice_repo.list(party_id=party_id, skip=skip, limit=limit)
+def list_invoices_svc(invoice_repo: InvoiceRepository, party_id=None, invoice_type: str = None, skip: int = 0, limit: int = 100) -> dict:
+    total = invoice_repo.count(party_id=party_id, invoice_type=invoice_type)
+    invoices = invoice_repo.list(party_id=party_id, invoice_type=invoice_type, skip=skip, limit=limit)
     ids = [i.id for i in invoices]
     payment_map = invoice_repo.bulk_payment_sums(ids)
-    return [_build_invoice_dict(inv, Decimal(str(payment_map.get(inv.id, 0)))) for inv in invoices]
+    party_ids = {i.party_id for i in invoices if i.party_id}
+    party_name_map = invoice_repo.bulk_party_names(party_ids)
+    
+    item_ids = [item.id for inv in invoices for item in inv.items]
+    returned_qty_map = {}
+    if item_ids:
+        rows = invoice_repo._db.execute(
+            select(InvoiceItem.original_invoice_item_id, func.sum(InvoiceItem.quantity))
+            .where(InvoiceItem.original_invoice_item_id.in_(item_ids))
+            .group_by(InvoiceItem.original_invoice_item_id)
+        ).all()
+        returned_qty_map = {orig_id: qty for orig_id, qty in rows}
+        
+    data = [_build_invoice_dict(inv, Decimal(str(payment_map.get(inv.id, 0))), party_name_map, returned_qty_map) for inv in invoices]
+    return {"total": total, "skip": skip, "limit": limit, "data": data}
 
 
 def allocate_batches_svc(
@@ -140,6 +158,7 @@ def create_purchase_invoice_svc(
                 initial_quantity=item.quantity,
                 remaining_quantity=item.quantity,
                 tenant_id=tenant_id,
+                party_id=data.party_id,
             )
             batch_repo.add(batch)
             batch_repo.flush()
@@ -150,7 +169,7 @@ def create_purchase_invoice_svc(
                 quantity=item.quantity,
                 unit_price=item.purchase_price,
                 purchase_price=item.purchase_price,
-                sale_price=item.selling_price,
+                sell_price=item.selling_price,
             )
             invoice_repo.add(invoice_item)
             total += item.purchase_price * item.quantity
@@ -175,14 +194,14 @@ def create_purchase_invoice_svc(
         raise
 
 
-def create_sale_invoice_svc(
+def create_sell_invoice_svc(
     invoice_repo: InvoiceRepository, batch_repo: BatchRepository,
-    data: InvoiceCreateSale, tenant_id: int
+    data: InvoiceCreateSell, tenant_id: int
 ) -> Invoice:
     try:
         invoice = Invoice(
             party_id=data.party_id,
-            invoice_type=INVOICE_TYPE_SALE,
+            invoice_type=INVOICE_TYPE_SELL,
             total_amount=Decimal("0"),
             delivery_fee=data.delivery_fee,
             footer_custom_text=data.footer_custom_text,
@@ -196,7 +215,7 @@ def create_sale_invoice_svc(
             latest_price = batch_repo.get_highest_selling_price(item.product_id)
             if latest_price is None:
                 raise HTTPException(status_code=400, detail="No batches available")
-            effective_price = Decimal(str(item.sale_price)) if item.sale_price is not None else latest_price
+            effective_price = Decimal(str(item.sell_price)) if item.sell_price is not None else latest_price
             allocations = allocate_batches_svc(batch_repo, item.product_id, item.quantity)
             for batch, qty in allocations:
                 batch.remaining_quantity = batch.remaining_quantity - qty
@@ -208,7 +227,7 @@ def create_sale_invoice_svc(
                     quantity=qty,
                     unit_price=effective_price,
                     purchase_price=locked_cost,
-                    sale_price=effective_price,
+                    sell_price=effective_price,
                 )
                 invoice_repo.add(invoice_item)
                 total += effective_price * qty
@@ -235,7 +254,7 @@ def update_invoice_svc(
 ) -> dict:
     new_items = data.get("items")
     if new_items is not None:
-        if invoice.invoice_type == INVOICE_TYPE_SALE:
+        if invoice.invoice_type == INVOICE_TYPE_SELL:
             for old_item in invoice.items:
                 b = batch_repo.get_by_id(old_item.batch_id)
                 if b:
@@ -256,7 +275,7 @@ def update_invoice_svc(
                 new_item = InvoiceItem(
                     invoice_id=invoice.id, batch_id=batch.id,
                     quantity=qty, unit_price=unit_price,
-                    purchase_price=batch.purchase_price, sale_price=unit_price,
+                    purchase_price=batch.purchase_price, sell_price=unit_price,
                 )
                 invoice_repo.add(new_item)
                 total += unit_price * qty
@@ -309,6 +328,23 @@ def update_invoice_svc(
 
     paid = invoice_repo.get_paid_amount(invoice.id)
     balance = invoice.total_amount - paid
+    items_out = []
+    for i in invoice.items:
+        product_name = i.batch.product.name if i.batch and i.batch.product else None
+        already_returned_qty = invoice_repo._db.execute(
+            select(func.sum(InvoiceItem.quantity))
+            .where(InvoiceItem.original_invoice_item_id == i.id)
+        ).scalar() or Decimal("0")
+        items_out.append({
+            "id": i.id, "batch_id": i.batch_id,
+            "product_id": i.batch.product_id if i.batch else None,
+            "product_name": product_name,
+            "quantity": float(i.quantity), "unit_price": float(i.unit_price),
+            "purchase_price": float(i.purchase_price) if i.purchase_price else None,
+            "sell_price": float(i.sell_price) if i.sell_price else None,
+            "already_returned_qty": float(already_returned_qty),
+        })
+
     return {
         "id": invoice.id,
         "party_id": invoice.party_id,
@@ -319,17 +355,7 @@ def update_invoice_svc(
         "paid_amount": float(paid),
         "balance": float(balance),
         "status": _invoice_status(paid, invoice.total_amount),
-        "items": [
-            {
-                "id": i.id, "batch_id": i.batch_id,
-                "product_id": i.batch.product_id if i.batch else None,
-                "product_name": i.batch.product.name if i.batch and i.batch.product else None,
-                "quantity": float(i.quantity), "unit_price": float(i.unit_price),
-                "purchase_price": float(i.purchase_price) if i.purchase_price else None,
-                "sale_price": float(i.sale_price) if i.sale_price else None,
-            }
-            for i in invoice.items
-        ],
+        "items": items_out,
     }
 
 
@@ -337,12 +363,12 @@ def delete_invoice_svc(
     invoice_repo: InvoiceRepository, batch_repo: BatchRepository, invoice: Invoice
 ) -> None:
     batches_to_delete = []
-    if invoice.invoice_type in (INVOICE_TYPE_SALE, INVOICE_TYPE_PURCHASE_RETURN):
+    if invoice.invoice_type in (INVOICE_TYPE_SELL, INVOICE_TYPE_PURCHASE_RETURN):
         for item in invoice.items:
             b = batch_repo.get_by_id(item.batch_id)
             if b:
                 b.remaining_quantity += item.quantity
-    elif invoice.invoice_type in (INVOICE_TYPE_PURCHASE, INVOICE_TYPE_SALE_RETURN):
+    elif invoice.invoice_type in (INVOICE_TYPE_PURCHASE, INVOICE_TYPE_SELL_RETURN):
         for item in invoice.items:
             b = batch_repo.get_by_id(item.batch_id)
             if b:
@@ -364,12 +390,12 @@ def process_return_svc(
     invoice_repo: InvoiceRepository, batch_repo: BatchRepository,
     orig_invoice: Invoice, data: dict, tenant_id: int
 ) -> Invoice:
-    if orig_invoice.invoice_type not in (INVOICE_TYPE_SALE, INVOICE_TYPE_PURCHASE):
+    if orig_invoice.invoice_type not in (INVOICE_TYPE_SELL, INVOICE_TYPE_PURCHASE):
         raise HTTPException(status_code=400, detail=ERR_INVALID_INVOICE_TYPE)
 
     return_type = (
-        INVOICE_TYPE_SALE_RETURN
-        if orig_invoice.invoice_type == INVOICE_TYPE_SALE
+        INVOICE_TYPE_SELL_RETURN
+        if orig_invoice.invoice_type == INVOICE_TYPE_SELL
         else INVOICE_TYPE_PURCHASE_RETURN
     )
 
@@ -426,12 +452,18 @@ def process_return_svc(
 
             if not orig_item or orig_item.invoice_id != orig_invoice.id:
                 raise HTTPException(status_code=400, detail=ERR_INVALID_ITEM)
-            if ret_qty > orig_item.quantity:
+                
+            already_returned_qty = invoice_repo._db.execute(
+                select(func.sum(InvoiceItem.quantity))
+                .where(InvoiceItem.original_invoice_item_id == orig_item_id)
+            ).scalar() or Decimal("0")
+
+            if ret_qty + already_returned_qty > orig_item.quantity:
                 raise HTTPException(status_code=400, detail=ERR_RETURN_QTY_EXCEEDS)
 
             orig_batch = batch_repo.get_by_id(orig_item.batch_id)
 
-            if return_type == INVOICE_TYPE_SALE_RETURN:
+            if return_type == INVOICE_TYPE_SELL_RETURN:
                 new_batch = StockBatch(
                     tenant_id=tenant_id,
                     product_id=orig_batch.product_id,
@@ -446,8 +478,9 @@ def process_return_svc(
                 return_unit_price = orig_item.unit_price
                 new_ii = InvoiceItem(
                     invoice_id=return_invoice.id, batch_id=new_batch.id,
+                    original_invoice_item_id=orig_item_id,
                     quantity=ret_qty, unit_price=return_unit_price,
-                    purchase_price=orig_item.purchase_price, sale_price=orig_item.sale_price,
+                    purchase_price=orig_item.purchase_price, sell_price=orig_item.sell_price,
                 )
                 invoice_repo.add(new_ii)
                 total_return += ret_qty * return_unit_price
@@ -466,8 +499,9 @@ def process_return_svc(
                     batch.remaining_quantity -= alloc_qty
                     new_ii = InvoiceItem(
                         invoice_id=return_invoice.id, batch_id=batch.id,
+                        original_invoice_item_id=orig_item_id,
                         quantity=alloc_qty, unit_price=return_unit_price,
-                        purchase_price=orig_item.purchase_price, sale_price=orig_item.sale_price,
+                        purchase_price=orig_item.purchase_price, sell_price=orig_item.sell_price,
                     )
                     invoice_repo.add(new_ii)
                     total_return += alloc_qty * return_unit_price

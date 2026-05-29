@@ -12,6 +12,8 @@ class StockBatchOut(BaseModel):
     initial_quantity: Decimal
     remaining_quantity: Decimal
     created_at: datetime
+    party_id: int | None = None
+    supplier_name: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

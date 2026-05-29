@@ -16,11 +16,27 @@ def list_batches_by_product(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    stmt = select(StockBatch).where(
+    from sqlalchemy.orm import joinedload
+    stmt = select(StockBatch).options(joinedload(StockBatch.party)).where(
         StockBatch.product_id == product_id,
         StockBatch.tenant_id == current_user.tenant_id,
     )
-    return db.execute(stmt).scalars().all()
+    batches = db.execute(stmt).scalars().all()
+    results = []
+    for b in batches:
+        b_dict = {
+            "id": b.id,
+            "product_id": b.product_id,
+            "purchase_price": b.purchase_price,
+            "current_selling_price": b.current_selling_price,
+            "initial_quantity": b.initial_quantity,
+            "remaining_quantity": b.remaining_quantity,
+            "created_at": b.created_at,
+            "party_id": b.party_id,
+            "supplier_name": b.party.name if b.party else None
+        }
+        results.append(b_dict)
+    return results
 
 
 @router.patch("/{batch_id}", response_model=StockBatchOut)

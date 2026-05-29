@@ -29,10 +29,11 @@ class InvoiceRepository:
             .where(Invoice.id == invoice_id, Invoice.tenant_id == self._tid)
         ).scalar_one_or_none()
 
-    def list(self, party_id: Optional[int] = None, skip: int = 0, limit: int = 100) -> List[Invoice]:
+    def list(self, party_id: Optional[int] = None, invoice_type: Optional[str] = None, skip: int = 0, limit: int = 100) -> List[Invoice]:
         q = (
             select(Invoice)
             .options(
+                joinedload(Invoice.party),
                 selectinload(Invoice.items).joinedload(InvoiceItem.batch).joinedload(StockBatch.product),
                 selectinload(Invoice.payments),
             )
@@ -40,8 +41,36 @@ class InvoiceRepository:
         )
         if party_id is not None:
             q = q.where(Invoice.party_id == party_id)
+        if invoice_type:
+            # Accept either 'sale'/'sell' or 'purchase' values
+            it = invoice_type.lower()
+            if it in ('sale', 'sell'):
+                q = q.where(Invoice.invoice_type == InvoiceType.SELL)
+            elif it in ('purchase', 'buy'):
+                q = q.where(Invoice.invoice_type == InvoiceType.PURCHASE)
+            elif it in ('sale_return', 'sell_return'):
+                q = q.where(Invoice.invoice_type == InvoiceType.SELL_RETURN)
+            elif it in ('purchase_return',):
+                q = q.where(Invoice.invoice_type == InvoiceType.PURCHASE_RETURN)
+
         q = q.order_by(Invoice.created_at.desc()).offset(skip).limit(limit)
-        return self._db.execute(q).scalars().all()
+        return self._db.execute(q).scalars().unique().all()
+
+    def count(self, party_id: Optional[int] = None, invoice_type: Optional[str] = None) -> int:
+        q = select(func.count(Invoice.id)).where(Invoice.tenant_id == self._tid)
+        if party_id is not None:
+            q = q.where(Invoice.party_id == party_id)
+        if invoice_type:
+            it = invoice_type.lower()
+            if it in ('sale', 'sell'):
+                q = q.where(Invoice.invoice_type == InvoiceType.SELL)
+            elif it in ('purchase', 'buy'):
+                q = q.where(Invoice.invoice_type == InvoiceType.PURCHASE)
+            elif it in ('sale_return', 'sell_return'):
+                q = q.where(Invoice.invoice_type == InvoiceType.SELL_RETURN)
+            elif it in ('purchase_return',):
+                q = q.where(Invoice.invoice_type == InvoiceType.PURCHASE_RETURN)
+        return self._db.execute(q).scalar_one()
 
     def bulk_payment_sums(self, invoice_ids: List[int]) -> dict:
         if not invoice_ids:
@@ -53,6 +82,15 @@ class InvoiceRepository:
             .group_by(Payment.invoice_id)
         ).all()
         return {inv_id: amt for inv_id, amt in rows}
+
+    def bulk_party_names(self, party_ids) -> dict:
+        if not party_ids:
+            return {}
+        rows = self._db.execute(
+            select(Party.id, Party.name).where(Party.id.in_(party_ids))
+        ).all()
+        return {pid: name for pid, name in rows}
+
 
     def get_paid_amount(self, invoice_id: int) -> Decimal:
         return Decimal(str(
@@ -191,7 +229,7 @@ class PartyRepository:
         sale_total = Decimal(str(self._db.execute(
             select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
                 Invoice.party_id == party_id,
-                Invoice.invoice_type == InvoiceType.SALE,
+                Invoice.invoice_type == InvoiceType.SELL,
                 Invoice.tenant_id == self._tid,
                 Invoice.id != exclude_invoice_id,
             )
@@ -199,7 +237,7 @@ class PartyRepository:
         return_total = Decimal(str(self._db.execute(
             select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
                 Invoice.party_id == party_id,
-                Invoice.invoice_type == InvoiceType.SALE_RETURN,
+                Invoice.invoice_type == InvoiceType.SELL_RETURN,
                 Invoice.tenant_id == self._tid,
                 Invoice.id != exclude_invoice_id,
             )
