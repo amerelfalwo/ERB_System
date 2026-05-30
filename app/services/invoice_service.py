@@ -117,9 +117,9 @@ def list_invoices_svc(invoice_repo: InvoiceRepository, party_id=None, invoice_ty
 
 
 def allocate_batches_svc(
-    batch_repo: BatchRepository, product_id: int, quantity: Decimal
+    batch_repo: BatchRepository, product_id: int, quantity: Decimal, party_id: int = None
 ) -> List[Tuple[StockBatch, Decimal]]:
-    batches = batch_repo.get_fifo_batches(product_id)
+    batches = batch_repo.get_fifo_batches(product_id, party_id=party_id)
     remaining = quantity
     allocations: List[Tuple[StockBatch, Decimal]] = []
     for batch in batches:
@@ -421,6 +421,7 @@ def process_return_svc(
                     select(func.coalesce(func.sum(StockBatch.remaining_quantity), 0)).where(
                         StockBatch.product_id == product_id,
                         StockBatch.tenant_id == tenant_id,
+                        StockBatch.party_id == orig_invoice.party_id,
                     )
                 ).scalar_one()
                 if Decimal(str(current_stock)) < needed_qty:
@@ -486,7 +487,12 @@ def process_return_svc(
                 total_return += ret_qty * return_unit_price
             else:
                 # Purchase return: use allocate_batches_svc to subtract from any available stock
-                allocations = allocate_batches_svc(batch_repo, orig_batch.product_id, ret_qty)
+                allocations = allocate_batches_svc(
+                    batch_repo,
+                    orig_batch.product_id,
+                    ret_qty,
+                    party_id=orig_invoice.party_id,
+                )
                 
                 product_last_price = (
                     orig_batch.product.last_purchase_price

@@ -130,13 +130,16 @@ class BatchRepository:
             select(StockBatch).where(StockBatch.id == batch_id, StockBatch.tenant_id == self._tid)
         ).scalar_one_or_none()
 
-    def get_fifo_batches(self, product_id: int) -> List[StockBatch]:
+    def get_fifo_batches(self, product_id: int, party_id: Optional[int] = None) -> List[StockBatch]:
+        q = select(StockBatch).where(
+            StockBatch.product_id == product_id,
+            StockBatch.tenant_id == self._tid,
+            StockBatch.remaining_quantity > 0,
+        )
+        if party_id is not None:
+            q = q.where(StockBatch.party_id == party_id)
         return self._db.execute(
-            select(StockBatch).where(
-                StockBatch.product_id == product_id,
-                StockBatch.tenant_id == self._tid,
-                StockBatch.remaining_quantity > 0,
-            ).order_by(StockBatch.created_at.asc(), StockBatch.id.asc())
+            q.order_by(StockBatch.created_at.asc(), StockBatch.id.asc())
         ).scalars().all()
 
     def get_highest_selling_price(self, product_id: int) -> Optional[Decimal]:

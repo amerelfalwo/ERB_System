@@ -31,6 +31,7 @@ def create_purchase_invoice(db: Session, data: InvoiceCreatePurchase, tenant_id:
                 initial_quantity=item.quantity,
                 remaining_quantity=item.quantity,
                 tenant_id=tenant_id,
+                party_id=data.party_id,
             )
             db.add(batch)
             db.flush()

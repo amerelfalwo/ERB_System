@@ -23,7 +23,7 @@ def profit_report(db: Session, tenant_id: int = None) -> ProfitReportOut:
     stmt = select(InvoiceItem, StockBatch, Invoice).join(
         StockBatch, StockBatch.id == InvoiceItem.batch_id
     ).join(Invoice, Invoice.id == InvoiceItem.invoice_id).where(
-        Invoice.invoice_type.in_([InvoiceType.SELL, InvoiceType.SELL_RETURN]),
+        Invoice.invoice_type == InvoiceType.SELL,
     )
     if tenant_id is not None:
         stmt = stmt.where(Invoice.tenant_id == tenant_id)
@@ -36,15 +36,10 @@ def profit_report(db: Session, tenant_id: int = None) -> ProfitReportOut:
         cost = invoice_item.purchase_price if invoice_item.purchase_price is not None else batch.purchase_price
         sale = invoice_item.sell_price if invoice_item.sell_price is not None else invoice_item.unit_price
         line_profit = (sale - cost) * invoice_item.quantity
-        if invoice.invoice_type == InvoiceType.SELL_RETURN:
-            line_profit = -line_profit
         if invoice.id not in seen_invoices:
             seen_invoices.add(invoice.id)
             fee = invoice.delivery_fee or Decimal("0")
-            if invoice.invoice_type == InvoiceType.SELL_RETURN:
-                line_profit += fee
-            else:
-                line_profit -= fee
+            line_profit -= fee
         total_profit += line_profit
         items.append(
             ProfitItem(
@@ -66,7 +61,7 @@ def party_profit_summary(db: Session, tenant_id: int) -> list:
                Party.id.label("party_id"), Party.name.label("party_name"))
         .join(Party, Party.id == Invoice.party_id)
         .where(
-            Invoice.invoice_type.in_([InvoiceType.SELL, InvoiceType.SELL_RETURN]),
+            Invoice.invoice_type == InvoiceType.SELL,
             Invoice.tenant_id == tenant_id,
             Party.tenant_id == tenant_id,
         )
@@ -93,17 +88,11 @@ def party_profit_summary(db: Session, tenant_id: int) -> list:
         sale = invoice_item.sell_price if invoice_item.sell_price is not None else invoice_item.unit_price
         revenue = sale * invoice_item.quantity
         profit = (sale - cost) * invoice_item.quantity
-        if inv_type == InvoiceType.SELL_RETURN:
-            profit = -profit
-            revenue = -revenue
         if party_id not in party_data:
             party_data[party_id] = {"name": party_name, "profit": Decimal("0"), "revenue": Decimal("0"), "invoices": set()}
         if inv_id not in seen_invoices:
             seen_invoices.add(inv_id)
-            if inv_type == InvoiceType.SELL_RETURN:
-                profit += delivery_fee
-            else:
-                profit -= delivery_fee
+            profit -= delivery_fee
         party_data[party_id]["profit"] += profit
         party_data[party_id]["revenue"] += revenue
         party_data[party_id]["invoices"].add(inv_id)

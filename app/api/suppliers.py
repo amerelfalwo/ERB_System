@@ -414,16 +414,28 @@ def supplier_stock_return(
 
             supplier_batches = db.execute(
                 select(StockBatch)
-                .join(InvoiceItem, StockBatch.id == InvoiceItem.batch_id)
-                .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
                 .where(
-                    Invoice.party_id == supplier_id,
-                    Invoice.invoice_type == InvoiceType.PURCHASE,
+                    StockBatch.party_id == supplier_id,
                     StockBatch.product_id == product_id,
                     StockBatch.tenant_id == current_user.tenant_id,
                     StockBatch.remaining_quantity > 0,
                 ).order_by(StockBatch.created_at.asc())
             ).scalars().all()
+
+            # Backward compatibility: fallback to legacy join if older batches lack party_id
+            if not supplier_batches:
+                supplier_batches = db.execute(
+                    select(StockBatch)
+                    .join(InvoiceItem, StockBatch.id == InvoiceItem.batch_id)
+                    .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+                    .where(
+                        Invoice.party_id == supplier_id,
+                        Invoice.invoice_type == InvoiceType.PURCHASE,
+                        StockBatch.product_id == product_id,
+                        StockBatch.tenant_id == current_user.tenant_id,
+                        StockBatch.remaining_quantity > 0,
+                    ).order_by(StockBatch.created_at.asc())
+                ).scalars().all()
 
             current_stock = sum(b.remaining_quantity for b in supplier_batches)
 
