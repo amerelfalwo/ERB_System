@@ -84,53 +84,28 @@ def list_products(
     product_ids = [p.id for p in products]
     tenant_id = current_user.tenant_id
 
-    # 1. Fetch active batches in bulk
-    batches = db.execute(
-        select(StockBatch)
+    # 1. Fetch latest batch for fallback prices
+    latest_batch_subq = (
+        select(
+            StockBatch.product_id,
+            func.max(StockBatch.id).label("max_batch_id")
+        )
         .where(
             StockBatch.product_id.in_(product_ids),
-            StockBatch.tenant_id == tenant_id,
-            StockBatch.remaining_quantity > 0,
+            StockBatch.tenant_id == tenant_id
         )
-        .order_by(StockBatch.created_at.asc(), StockBatch.id.asc())
+        .group_by(StockBatch.product_id)
+        .subquery()
+    )
+
+    latest_batches = db.execute(
+        select(StockBatch)
+        .join(latest_batch_subq, (StockBatch.id == latest_batch_subq.c.max_batch_id))
     ).scalars().all()
 
-    active_batches_by_product = defaultdict(list)
-    for batch in batches:
-        active_batches_by_product[batch.product_id].append(batch)
+    latest_batch_by_product = {batch.product_id: batch for batch in latest_batches}
 
-    # 2. For products without active batches, fetch fallback last purchase price
-    fallback_products = [pid for pid in product_ids if not active_batches_by_product[pid]]
-    last_purchase_prices_dict = {}
-    if fallback_products:
-        subq = (
-            select(
-                StockBatch.product_id,
-                func.max(InvoiceItem.id).label("max_item_id")
-            )
-            .join(InvoiceItem, StockBatch.id == InvoiceItem.batch_id)
-            .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
-            .where(
-                Invoice.invoice_type == InvoiceType.PURCHASE,
-                Invoice.tenant_id == tenant_id,
-                StockBatch.product_id.in_(fallback_products)
-            )
-            .group_by(StockBatch.product_id)
-            .subquery()
-        )
-
-        stmt = (
-            select(
-                StockBatch.product_id,
-                InvoiceItem.purchase_price
-            )
-            .join(InvoiceItem, StockBatch.id == InvoiceItem.batch_id)
-            .join(subq, (StockBatch.product_id == subq.c.product_id) & (InvoiceItem.id == subq.c.max_item_id))
-        )
-        fallback_rows = db.execute(stmt).all()
-        last_purchase_prices_dict = {row.product_id: row.purchase_price for row in fallback_rows}
-
-    # 3. Fetch the latest supplier for all products
+    # 2. Fetch the latest supplier for all products
     supplier_subq = (
         select(
             StockBatch.product_id,
@@ -162,14 +137,24 @@ def list_products(
 
     result = []
     for product in products:
-        product_batches = active_batches_by_product[product.id]
+        latest_batch = latest_batch_by_product.get(product.id)
+        
+        purchase_price = float(product.purchase_price or 0)
+        sell_price = float(product.sell_price or 0)
+        
+        if latest_batch:
+            if purchase_price == 0:
+                purchase_price = float(latest_batch.purchase_price or 0)
+            if sell_price == 0:
+                sell_price = float(latest_batch.current_selling_price or 0)
+                
         result.append(
             ProductWithCostOut(
                 id=product.id,
                 name=product.name,
                 last_purchase_price=float(product.last_purchase_price or 0),
-                purchase_price=float(product.purchase_price or 0),
-                sell_price=float(product.sell_price or 0),
+                purchase_price=purchase_price,
+                sell_price=sell_price,
                 supplier_name=supplier_dict.get(product.id)
             )
         )
