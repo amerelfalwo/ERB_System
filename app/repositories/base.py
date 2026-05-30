@@ -137,7 +137,7 @@ class BatchRepository:
             StockBatch.remaining_quantity > 0,
         )
         if party_id is not None:
-            q = q.where(StockBatch.party_id == party_id)
+            q = q.where((StockBatch.party_id == party_id) | (StockBatch.party_id.is_(None)))
         return self._db.execute(
             q.order_by(StockBatch.created_at.asc(), StockBatch.id.asc())
         ).scalars().all()

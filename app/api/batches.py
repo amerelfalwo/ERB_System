@@ -28,7 +28,7 @@ def list_batches_by_product(
             "id": b.id,
             "product_id": b.product_id,
             "purchase_price": b.purchase_price,
-            "current_selling_price": b.current_selling_price,
+            "selling_price": b.current_selling_price,
             "initial_quantity": b.initial_quantity,
             "remaining_quantity": b.remaining_quantity,
             "created_at": b.created_at,
@@ -51,7 +51,7 @@ def update_batch(
     ).scalar_one_or_none()
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found")
-    batch.current_selling_price = data.current_selling_price
+    batch.current_selling_price = data.selling_price
     db.commit()
     db.refresh(batch)
     return batch

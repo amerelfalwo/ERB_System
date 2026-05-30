@@ -34,59 +34,12 @@ class ProductWithCostOut(BaseModel):
     last_purchase_price: Optional[float] = 0.0
     purchase_price: Optional[float] = 0.0
     sell_price: Optional[float] = 0.0
-    current_cost: Optional[float] = None
-    current_selling_price: Optional[float] = None
     supplier_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
 
-def _get_current_cost(db: Session, product_id: int, tenant_id: int) -> Optional[Decimal]:
-    fifo_price = db.execute(
-        select(StockBatch.purchase_price)
-        .where(
-            StockBatch.product_id == product_id,
-            StockBatch.tenant_id == tenant_id,
-            StockBatch.remaining_quantity > 0,
-        )
-        .order_by(StockBatch.created_at.asc(), StockBatch.id.asc())
-        .limit(1)
-    ).scalar_one_or_none()
 
-    if fifo_price is not None:
-        return fifo_price
-
-    last_purchase_price = db.execute(
-        select(InvoiceItem.purchase_price)
-        .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
-        .where(
-            Invoice.invoice_type == InvoiceType.PURCHASE,
-            Invoice.tenant_id == tenant_id,
-            InvoiceItem.batch_id.in_(
-                select(StockBatch.id).where(
-                    StockBatch.product_id == product_id,
-                    StockBatch.tenant_id == tenant_id,
-                )
-            ),
-        )
-        .order_by(Invoice.created_at.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-
-    return last_purchase_price
-
-
-def _get_current_selling_price(db: Session, product_id: int, tenant_id: int) -> Optional[Decimal]:
-    return db.execute(
-        select(StockBatch.current_selling_price)
-        .where(
-            StockBatch.product_id == product_id,
-            StockBatch.tenant_id == tenant_id,
-            StockBatch.remaining_quantity > 0,
-        )
-        .order_by(StockBatch.current_selling_price.desc())
-        .limit(1)
-    ).scalar_one_or_none()
 
 
 @router.post("", response_model=ProductWithCostOut)
@@ -110,8 +63,6 @@ def create_product(
         last_purchase_price=float(product.last_purchase_price or 0),
         purchase_price=float(product.purchase_price or 0),
         sell_price=float(product.sell_price or 0),
-        current_cost=None,
-        current_selling_price=None,
         supplier_name=None,
     )
 
@@ -212,14 +163,6 @@ def list_products(
     result = []
     for product in products:
         product_batches = active_batches_by_product[product.id]
-        if product_batches:
-            cost = product_batches[0].purchase_price
-            valid_selling_prices = [b.current_selling_price for b in product_batches if b.current_selling_price is not None]
-            sell = max(valid_selling_prices) if valid_selling_prices else None
-        else:
-            cost = last_purchase_prices_dict.get(product.id)
-            sell = None
-
         result.append(
             ProductWithCostOut(
                 id=product.id,
@@ -227,8 +170,6 @@ def list_products(
                 last_purchase_price=float(product.last_purchase_price or 0),
                 purchase_price=float(product.purchase_price or 0),
                 sell_price=float(product.sell_price or 0),
-                current_cost=float(cost) if cost is not None else None,
-                current_selling_price=float(sell) if sell is not None else None,
                 supplier_name=supplier_dict.get(product.id)
             )
         )
@@ -293,16 +234,11 @@ def update_product(
     db.commit()
     db.refresh(product)
 
-    cost = _get_current_cost(db, product.id, current_user.tenant_id)
-    sell = _get_current_selling_price(db, product.id, current_user.tenant_id)
-
     return ProductWithCostOut(
         id=product.id,
         name=product.name,
         last_purchase_price=float(product.last_purchase_price or 0),
         purchase_price=float(product.purchase_price or 0),
         sell_price=float(product.sell_price or 0),
-        current_cost=float(cost) if cost is not None else None,
-        current_selling_price=float(sell) if sell is not None else None,
         supplier_name=None,  # Or re-calculate if needed, but updating product doesn't change supplier
     )

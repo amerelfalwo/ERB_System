@@ -216,6 +216,8 @@ def create_sell_invoice_svc(
             if latest_price is None:
                 raise HTTPException(status_code=400, detail="No batches available")
             effective_price = Decimal(str(item.sell_price)) if item.sell_price is not None else latest_price
+            if effective_price <= Decimal("0"):
+                raise HTTPException(status_code=400, detail=f"سعر البيع غير محدد أو صفر للمنتج ID {item.product_id}. يرجى إدخال سعر بيع صحيح.")
             allocations = allocate_batches_svc(batch_repo, item.product_id, item.quantity)
             for batch, qty in allocations:
                 batch.remaining_quantity = batch.remaining_quantity - qty
@@ -362,6 +364,13 @@ def update_invoice_svc(
 def delete_invoice_svc(
     invoice_repo: InvoiceRepository, batch_repo: BatchRepository, invoice: Invoice
 ) -> None:
+    for item in invoice.items:
+        returns_count = invoice_repo._db.execute(
+            select(func.count(InvoiceItem.id)).where(InvoiceItem.original_invoice_item_id == item.id)
+        ).scalar()
+        if returns_count and returns_count > 0:
+            raise HTTPException(status_code=400, detail="لا يمكن حذف الفاتورة لوجود مرتجعات مرتبطة بها")
+
     batches_to_delete = []
     if invoice.invoice_type in (INVOICE_TYPE_SELL, INVOICE_TYPE_PURCHASE_RETURN):
         for item in invoice.items:
@@ -378,10 +387,15 @@ def delete_invoice_svc(
 
     for item in invoice.items:
         invoice_repo.delete(item)
+    invoice_repo.flush()
+
     for b in batches_to_delete:
         batch_repo.delete(b)
+
     for payment in invoice.payments:
         invoice_repo.delete(payment)
+    invoice_repo.flush()
+
     invoice_repo.delete(invoice)
     invoice_repo.commit()
 
@@ -421,7 +435,7 @@ def process_return_svc(
                     select(func.coalesce(func.sum(StockBatch.remaining_quantity), 0)).where(
                         StockBatch.product_id == product_id,
                         StockBatch.tenant_id == tenant_id,
-                        StockBatch.party_id == orig_invoice.party_id,
+                        (StockBatch.party_id == orig_invoice.party_id) | (StockBatch.party_id.is_(None))
                     )
                 ).scalar_one()
                 if Decimal(str(current_stock)) < needed_qty:
@@ -468,6 +482,7 @@ def process_return_svc(
                 new_batch = StockBatch(
                     tenant_id=tenant_id,
                     product_id=orig_batch.product_id,
+                    party_id=orig_batch.party_id,
                     purchase_price=orig_batch.purchase_price,
                     current_selling_price=orig_batch.current_selling_price,
                     initial_quantity=ret_qty,
@@ -516,14 +531,6 @@ def process_return_svc(
             raise HTTPException(status_code=400, detail=ERR_NO_VALID_RETURN_ITEMS)
 
         return_invoice.total_amount = total_return
-
-        if total_return > Decimal("0"):
-            refund_payment = Payment(
-                party_id=orig_invoice.party_id,
-                invoice_id=orig_invoice.id,
-                amount=-total_return
-            )
-            invoice_repo.add(refund_payment)
 
         invoice_repo.commit()
     except Exception:
