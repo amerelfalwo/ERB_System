@@ -23,7 +23,7 @@ def profit_report(db: Session, tenant_id: int = None) -> ProfitReportOut:
     stmt = select(InvoiceItem, StockBatch, Invoice).join(
         StockBatch, StockBatch.id == InvoiceItem.batch_id
     ).join(Invoice, Invoice.id == InvoiceItem.invoice_id).where(
-        Invoice.invoice_type == InvoiceType.SELL,
+        Invoice.invoice_type.in_([InvoiceType.SELL, InvoiceType.SELL_RETURN]),
     )
     if tenant_id is not None:
         stmt = stmt.where(Invoice.tenant_id == tenant_id)
@@ -35,17 +35,23 @@ def profit_report(db: Session, tenant_id: int = None) -> ProfitReportOut:
     for invoice_item, batch, invoice in rows:
         cost = invoice_item.purchase_price if invoice_item.purchase_price is not None else batch.purchase_price
         sale = invoice_item.sell_price if invoice_item.sell_price is not None else invoice_item.unit_price
-        line_profit = (sale - cost) * invoice_item.quantity
+        
+        if invoice.invoice_type == InvoiceType.SELL_RETURN:
+            line_profit = -(sale - cost) * invoice_item.quantity
+            qty = -invoice_item.quantity
+        else:
+            line_profit = (sale - cost) * invoice_item.quantity
+            qty = invoice_item.quantity
+            
         if invoice.id not in seen_invoices:
             seen_invoices.add(invoice.id)
-            fee = invoice.delivery_fee or Decimal("0")
-            line_profit -= fee
+                
         total_profit += line_profit
         items.append(
             ProfitItem(
                 invoice_id=invoice.id,
                 batch_id=batch.id,
-                quantity=invoice_item.quantity,
+                quantity=qty,
                 purchase_price=cost,
                 selling_price=sale,
                 profit=line_profit,
@@ -61,7 +67,7 @@ def party_profit_summary(db: Session, tenant_id: int) -> list:
                Party.id.label("party_id"), Party.name.label("party_name"))
         .join(Party, Party.id == Invoice.party_id)
         .where(
-            Invoice.invoice_type == InvoiceType.SELL,
+            Invoice.invoice_type.in_([InvoiceType.SELL, InvoiceType.SELL_RETURN]),
             Invoice.tenant_id == tenant_id,
             Party.tenant_id == tenant_id,
         )
@@ -86,13 +92,18 @@ def party_profit_summary(db: Session, tenant_id: int) -> list:
         party_id, party_name, inv_type, delivery_fee = invoice_meta[inv_id]
         cost = invoice_item.purchase_price if invoice_item.purchase_price is not None else batch.purchase_price
         sale = invoice_item.sell_price if invoice_item.sell_price is not None else invoice_item.unit_price
-        revenue = sale * invoice_item.quantity
-        profit = (sale - cost) * invoice_item.quantity
+        
+        if inv_type == InvoiceType.SELL_RETURN:
+            revenue = -(sale * invoice_item.quantity)
+            profit = -((sale - cost) * invoice_item.quantity)
+        else:
+            revenue = sale * invoice_item.quantity
+            profit = (sale - cost) * invoice_item.quantity
+            
         if party_id not in party_data:
             party_data[party_id] = {"name": party_name, "profit": Decimal("0"), "revenue": Decimal("0"), "invoices": set()}
         if inv_id not in seen_invoices:
             seen_invoices.add(inv_id)
-            profit -= delivery_fee
         party_data[party_id]["profit"] += profit
         party_data[party_id]["revenue"] += revenue
         party_data[party_id]["invoices"].add(inv_id)
@@ -101,8 +112,8 @@ def party_profit_summary(db: Session, tenant_id: int) -> list:
         {
             "party_id": pid,
             "party_name": v["name"],
-            "total_profit": float(v["profit"]),
-            "total_revenue": float(v["revenue"]),
+            "total_profit": v["profit"],
+            "total_revenue": v["revenue"],
             "invoice_count": len(v["invoices"]),
         }
         for pid, v in party_data.items()
@@ -175,10 +186,11 @@ def party_statement(db: Session, party_id: int, tenant_id: int) -> StatementOut:
     transactions = []
 
     for inv in invoices:
+        is_return = inv.invoice_type in (InvoiceType.SELL_RETURN, InvoiceType.PURCHASE_RETURN)
         transactions.append({
             "date": inv.created_at,
-            "type": "INVOICE",
-            "reference": f"Invoice #{inv.id}",
+            "type": "RETURN" if is_return else "INVOICE",
+            "reference": f"Return #{inv.id}" if is_return else f"Invoice #{inv.id}",
             "amount": inv.total_amount,
             "balance_effect": inv.total_amount if inv.invoice_type in (InvoiceType.SELL, InvoiceType.PURCHASE) else -inv.total_amount,
         })
@@ -223,28 +235,52 @@ def party_statement(db: Session, party_id: int, tenant_id: int) -> StatementOut:
 
 def dashboard_analytics(db: Session, tenant_id: int) -> DashboardAnalyticsOut:
     from sqlalchemy import extract, case, literal_column
+    from app.models.domain import Party, PartyType
 
     profit_data = profit_report(db, tenant_id)
     inventory_data = inventory_report(db, tenant_id)
 
-    # ── Outstanding balances: 2 super fast, robust aggregate queries ──
+    # ── Outstanding balances: calculate via PartyType and Invoice totals + Payments ──
     invoice_sums = db.execute(
-        select(Invoice.invoice_type, func.coalesce(func.sum(Invoice.total_amount), 0))
-        .where(Invoice.tenant_id == tenant_id, Invoice.invoice_type.in_([InvoiceType.SELL, InvoiceType.PURCHASE]))
-        .group_by(Invoice.invoice_type)
+        select(Party.party_type, Invoice.invoice_type, func.coalesce(func.sum(Invoice.total_amount), 0))
+        .join(Party, Party.id == Invoice.party_id)
+        .where(Invoice.tenant_id == tenant_id)
+        .group_by(Party.party_type, Invoice.invoice_type)
     ).all()
-    invoice_sums_map = {row[0]: Decimal(str(row[1])) for row in invoice_sums}
-
+    
     payment_sums = db.execute(
-        select(Invoice.invoice_type, func.coalesce(func.sum(Payment.amount), 0))
-        .join(Payment, Payment.invoice_id == Invoice.id)
-        .where(Invoice.tenant_id == tenant_id, Invoice.invoice_type.in_([InvoiceType.SELL, InvoiceType.PURCHASE]))
-        .group_by(Invoice.invoice_type)
+        select(Party.party_type, func.coalesce(func.sum(Payment.amount), 0))
+        .join(Party, Party.id == Payment.party_id)
+        .where(Party.tenant_id == tenant_id)
+        .group_by(Party.party_type)
     ).all()
-    payment_sums_map = {row[0]: Decimal(str(row[1])) for row in payment_sums}
-
-    customer_receivables = invoice_sums_map.get(InvoiceType.SELL, Decimal("0")) - payment_sums_map.get(InvoiceType.SELL, Decimal("0"))
-    supplier_payables = invoice_sums_map.get(InvoiceType.PURCHASE, Decimal("0")) - payment_sums_map.get(InvoiceType.PURCHASE, Decimal("0"))
+    
+    initial_balances = db.execute(
+        select(Party.party_type, func.coalesce(func.sum(Party.initial_balance), 0))
+        .where(Party.tenant_id == tenant_id)
+        .group_by(Party.party_type)
+    ).all()
+    
+    init_bal_map = {row[0]: Decimal(str(row[1])) for row in initial_balances}
+    inv_map = {(pt, it): Decimal(str(amt)) for pt, it, amt in invoice_sums}
+    pay_map = {row[0]: Decimal(str(row[1])) for row in payment_sums}
+    
+    # Receivables (Clients): initial_balance + SELL - SELL_RETURN - PAYMENTS
+    customer_receivables = (
+        init_bal_map.get(PartyType.CLIENT, Decimal("0"))
+        + inv_map.get((PartyType.CLIENT, InvoiceType.SELL), Decimal("0"))
+        - inv_map.get((PartyType.CLIENT, InvoiceType.SELL_RETURN), Decimal("0"))
+        - pay_map.get(PartyType.CLIENT, Decimal("0"))
+    )
+    
+    # Payables (Suppliers): initial_balance + PURCHASE - PURCHASE_RETURN - PAYMENTS
+    supplier_payables = (
+        init_bal_map.get(PartyType.SUPPLIER, Decimal("0"))
+        + inv_map.get((PartyType.SUPPLIER, InvoiceType.PURCHASE), Decimal("0"))
+        - inv_map.get((PartyType.SUPPLIER, InvoiceType.PURCHASE_RETURN), Decimal("0"))
+        - pay_map.get(PartyType.SUPPLIER, Decimal("0"))
+    )
+    
     outstanding_balances = customer_receivables + supplier_payables
 
     # ── Monthly sales/purchases: ONE aggregation query ──
@@ -256,7 +292,6 @@ def dashboard_analytics(db: Session, tenant_id: int) -> DashboardAnalyticsOut:
         )
         .where(
             Invoice.tenant_id == tenant_id,
-            Invoice.invoice_type.in_([InvoiceType.SELL, InvoiceType.PURCHASE]),
         )
         .group_by(extract("month", Invoice.created_at), Invoice.invoice_type)
     ).all()
@@ -267,10 +302,15 @@ def dashboard_analytics(db: Session, tenant_id: int) -> DashboardAnalyticsOut:
         month_idx = int(row.month_num) - 1
         if 0 <= month_idx < 12:
             m_name = months[month_idx]
+            val = Decimal(str(row.total))
             if row.invoice_type == InvoiceType.SELL:
-                monthly_sales_dict[m_name]["sales"] = Decimal(str(row.total))
-            else:
-                monthly_sales_dict[m_name]["purchases"] = Decimal(str(row.total))
+                monthly_sales_dict[m_name]["sales"] += val
+            elif row.invoice_type == InvoiceType.SELL_RETURN:
+                monthly_sales_dict[m_name]["sales"] -= val
+            elif row.invoice_type == InvoiceType.PURCHASE:
+                monthly_sales_dict[m_name]["purchases"] += val
+            elif row.invoice_type == InvoiceType.PURCHASE_RETURN:
+                monthly_sales_dict[m_name]["purchases"] -= val
 
     monthly_sales = [MonthlySales(name=k, sales=v["sales"], purchases=v["purchases"]) for k, v in monthly_sales_dict.items()]
 
@@ -291,7 +331,16 @@ def dashboard_analytics(db: Session, tenant_id: int) -> DashboardAnalyticsOut:
 
     recent_transactions = []
     for inv in recent_invoices:
-        desc = "Supplier Payables" if inv.invoice_type == InvoiceType.PURCHASE else "Customer Receivables" if inv.invoice_type == InvoiceType.SELL else str(inv.invoice_type.value)
+        desc = str(inv.invoice_type.value)
+        if inv.invoice_type == InvoiceType.PURCHASE:
+            desc = "Supplier Payables"
+        elif inv.invoice_type == InvoiceType.SELL:
+            desc = "Customer Receivables"
+        elif inv.invoice_type == InvoiceType.SELL_RETURN:
+            desc = "Customer Return"
+        elif inv.invoice_type == InvoiceType.PURCHASE_RETURN:
+            desc = "Supplier Return"
+            
         paid_total = paid_map.get(inv.id, Decimal("0"))
         status = "Pending" if inv.total_amount > paid_total else "Completed"
         recent_transactions.append(

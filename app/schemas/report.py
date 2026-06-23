@@ -68,3 +68,11 @@ class DashboardAnalyticsOut(BaseModel):
     supplier_payables: Decimal
     monthly_sales: List[MonthlySales]
     recent_transactions: List[RecentTransaction]
+
+class PartyProfitSummaryOut(BaseModel):
+    party_id: int
+    party_name: str
+    total_profit: Decimal
+    total_revenue: Decimal
+    invoice_count: int
+

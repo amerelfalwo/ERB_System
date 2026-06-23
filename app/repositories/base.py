@@ -245,13 +245,32 @@ class PartyRepository:
                 Invoice.id != exclude_invoice_id,
             )
         ).scalar_one()))
-        return max(Decimal("0"), sale_total - return_total)
+        return sale_total - return_total
+
+    def total_purchased_net_excluding(self, party_id: int, exclude_invoice_id: int) -> Decimal:
+        purchase_total = Decimal(str(self._db.execute(
+            select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
+                Invoice.party_id == party_id,
+                Invoice.invoice_type == InvoiceType.PURCHASE,
+                Invoice.tenant_id == self._tid,
+                Invoice.id != exclude_invoice_id,
+            )
+        ).scalar_one()))
+        return_total = Decimal(str(self._db.execute(
+            select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
+                Invoice.party_id == party_id,
+                Invoice.invoice_type == InvoiceType.PURCHASE_RETURN,
+                Invoice.tenant_id == self._tid,
+                Invoice.id != exclude_invoice_id,
+            )
+        ).scalar_one()))
+        return purchase_total - return_total
 
     def total_paid_excluding(self, party_id: int, exclude_invoice_id: int) -> Decimal:
         return Decimal(str(self._db.execute(
             select(func.coalesce(func.sum(Payment.amount), 0)).join(Party).where(
                 Payment.party_id == party_id,
-                Payment.invoice_id != exclude_invoice_id,
+                (Payment.invoice_id != exclude_invoice_id) | (Payment.invoice_id.is_(None)),
                 Party.tenant_id == self._tid,
             )
         ).scalar_one()))
@@ -299,6 +318,60 @@ class ProductRepository:
                 Product.tenant_id == self._tid,
             )
         ).scalars().all())
+
+    def get_latest_batches_for_products(self, product_ids: List[int]) -> dict:
+        if not product_ids:
+            return {}
+        latest_batch_subq = (
+            select(
+                StockBatch.product_id,
+                func.max(StockBatch.id).label("max_batch_id")
+            )
+            .where(
+                StockBatch.product_id.in_(product_ids),
+                StockBatch.tenant_id == self._tid
+            )
+            .group_by(StockBatch.product_id)
+            .subquery()
+        )
+        latest_batches = self._db.execute(
+            select(StockBatch)
+            .join(latest_batch_subq, (StockBatch.id == latest_batch_subq.c.max_batch_id))
+        ).scalars().all()
+        return {batch.product_id: batch for batch in latest_batches}
+
+    def get_latest_suppliers_for_products(self, product_ids: List[int]) -> dict:
+        if not product_ids:
+            return {}
+        from app.models.domain import InvoiceItem, Invoice, InvoiceType, Party
+        supplier_subq = (
+            select(
+                StockBatch.product_id,
+                func.max(InvoiceItem.id).label("max_item_id")
+            )
+            .join(InvoiceItem, StockBatch.id == InvoiceItem.batch_id)
+            .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+            .where(
+                Invoice.invoice_type == InvoiceType.PURCHASE,
+                Invoice.tenant_id == self._tid,
+                StockBatch.product_id.in_(product_ids)
+            )
+            .group_by(StockBatch.product_id)
+            .subquery()
+        )
+
+        supplier_stmt = (
+            select(
+                StockBatch.product_id,
+                Party.name
+            )
+            .join(InvoiceItem, StockBatch.id == InvoiceItem.batch_id)
+            .join(supplier_subq, (StockBatch.product_id == supplier_subq.c.product_id) & (InvoiceItem.id == supplier_subq.c.max_item_id))
+            .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+            .join(Party, Party.id == Invoice.party_id)
+        )
+        supplier_rows = self._db.execute(supplier_stmt).all()
+        return {row.product_id: row.name for row in supplier_rows}
 
     def add(self, product: Product) -> None:
         self._db.add(product)

@@ -96,12 +96,17 @@ def create_payment(db: Session, data: PaymentCreate, tenant_id: int = None) -> P
             )
         ).scalar_one()))
         remaining_balance = invoice.total_amount - current_paid_amount
-        if data.amount > remaining_balance:
+        if data.amount < 0 and abs(data.amount) > current_paid_amount:
+            raise ValueError("Cannot refund more than what was paid for this invoice")
+        if data.amount > 0 and data.amount > remaining_balance:
             raise ValueError("Cannot pay more than the outstanding balance of the invoice")
     else:
         balance = get_party_balance(db, party_id, tenant_id)
-        outstanding = abs(balance)
-        if data.amount > outstanding:
+        if balance == 0:
+            raise ValueError("No outstanding balance")
+        if (balance > 0 and data.amount < 0) or (balance < 0 and data.amount > 0):
+            raise ValueError("Payment direction mismatch with balance")
+        if abs(data.amount) > abs(balance):
             raise ValueError("Cannot pay more than the outstanding balance")
 
     payment = Payment(

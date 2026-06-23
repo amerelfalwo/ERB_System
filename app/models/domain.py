@@ -66,7 +66,7 @@ class Product(Base):
     purchase_price = Column(Numeric(12, 2), default=0)
     sell_price = Column(Numeric(12, 2), default=0)
     tenant = relationship("Tenant", back_populates="products")
-    batches = relationship("StockBatch", back_populates="product")
+    batches = relationship("StockBatch", back_populates="product", passive_deletes=True)
 
 class StockBatch(Base):
     __tablename__ = "stock_batches"
@@ -75,7 +75,7 @@ class StockBatch(Base):
     )
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True)
-    product_id = Column(Integer, ForeignKey("products.id"), index=True)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="RESTRICT"), index=True)
     party_id = Column(Integer, ForeignKey("parties.id", ondelete="SET NULL"), nullable=True, index=True)
     purchase_price = Column(Numeric(12, 2))
     current_selling_price = Column(Numeric(12, 2))
@@ -94,7 +94,7 @@ class Invoice(Base):
     )
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True)
-    party_id = Column(Integer, ForeignKey("parties.id"), index=True)
+    party_id = Column(Integer, ForeignKey("parties.id", ondelete="RESTRICT"), index=True)
     invoice_type = Column(Enum(InvoiceType, native_enum=False), index=True)
     total_amount = Column(Numeric(12, 2))
     delivery_fee = Column(Numeric(12, 2), default=0)
@@ -102,15 +102,15 @@ class Invoice(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     tenant = relationship("Tenant", back_populates="invoices")
     party = relationship("Party", back_populates="invoices")
-    items = relationship("InvoiceItem", back_populates="invoice")
-    payments = relationship("Payment", back_populates="invoice")
+    items = relationship("InvoiceItem", back_populates="invoice", cascade="all, delete-orphan", passive_deletes=True)
+    payments = relationship("Payment", back_populates="invoice", cascade="all, delete-orphan", passive_deletes=True)
 
 class InvoiceItem(Base):
     __tablename__ = "invoice_items"
     id = Column(Integer, primary_key=True, index=True)
-    invoice_id = Column(Integer, ForeignKey("invoices.id"), index=True)
-    batch_id = Column(Integer, ForeignKey("stock_batches.id"), index=True)
-    original_invoice_item_id = Column(Integer, ForeignKey("invoice_items.id"), nullable=True, index=True)
+    invoice_id = Column(Integer, ForeignKey("invoices.id", ondelete="CASCADE"), index=True)
+    batch_id = Column(Integer, ForeignKey("stock_batches.id", ondelete="RESTRICT"), index=True)
+    original_invoice_item_id = Column(Integer, ForeignKey("invoice_items.id", ondelete="SET NULL"), nullable=True, index=True)
     quantity = Column(Numeric(12, 3))
     unit_price = Column(Numeric(12, 2))  # Keep for backwards compat or as general price
     purchase_price = Column(Numeric(12, 2), nullable=True)
@@ -121,8 +121,8 @@ class InvoiceItem(Base):
 class Payment(Base):
     __tablename__ = "payments"
     id = Column(Integer, primary_key=True, index=True)
-    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=True, index=True)
-    party_id = Column(Integer, ForeignKey("parties.id"), index=True)
+    invoice_id = Column(Integer, ForeignKey("invoices.id", ondelete="CASCADE"), nullable=True, index=True)
+    party_id = Column(Integer, ForeignKey("parties.id", ondelete="RESTRICT"), index=True)
     amount = Column(Numeric(12, 2))
     payment_date = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     invoice = relationship("Invoice", back_populates="payments")

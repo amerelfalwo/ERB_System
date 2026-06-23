@@ -36,32 +36,31 @@ def _build_invoice_dict(inv: Invoice, paid: Decimal, party_name_map: dict = None
             )
             sell = item.sell_price if item.sell_price is not None else item.unit_price
             profit += (sell - cost) * item.quantity
-        profit -= inv.delivery_fee or Decimal("0")
 
     return {
         "id": inv.id,
         "party_id": inv.party_id,
         "party_name": (party_name_map or {}).get(inv.party_id) if party_name_map is not None else (inv.party.name if inv.party else None),
         "invoice_type": inv.invoice_type.value if inv.invoice_type else None,
-        "total_amount": float(inv.total_amount),
-        "delivery_fee": float(inv.delivery_fee) if inv.delivery_fee else 0,
+        "total_amount": inv.total_amount,
+        "delivery_fee": inv.delivery_fee if inv.delivery_fee else Decimal("0"),
         "footer_custom_text": inv.footer_custom_text,
-        "paid_amount": float(paid),
-        "balance": float(balance),
+        "paid_amount": paid,
+        "balance": balance,
         "status": _invoice_status(paid, inv.total_amount),
-        "invoice_profit": float(profit),
+        "invoice_profit": profit,
         "created_at": inv.created_at.isoformat() if inv.created_at else None,
         "items": [
             {
                 "id": item.id,
                 "batch_id": item.batch_id,
                 "product_id": item.batch.product_id if item.batch else None,
-                "quantity": float(item.quantity),
-                "unit_price": float(item.unit_price),
-                "purchase_price": float(item.purchase_price) if item.purchase_price else None,
-                "sell_price": float(item.sell_price) if item.sell_price else None,
+                "quantity": item.quantity,
+                "unit_price": item.unit_price,
+                "purchase_price": item.purchase_price if item.purchase_price else None,
+                "sell_price": item.sell_price if item.sell_price else None,
                 "product_name": item.batch.product.name if item.batch and item.batch.product else None,
-                "already_returned_qty": float(returned_qty_map.get(item.id, 0)) if returned_qty_map else 0.0,
+                "already_returned_qty": returned_qty_map.get(item.id, Decimal("0")) if returned_qty_map else Decimal("0"),
                 "original_invoice_item_id": item.original_invoice_item_id,
             }
             for item in inv.items
@@ -86,12 +85,14 @@ def get_party_previous_balance_svc(
     invoice_id: int,
     invoice_type: InvoiceType,
 ) -> Decimal:
-    if invoice_type == INVOICE_TYPE_SELL:
+    party = party_repo.get_by_id(party_id)
+    initial_balance = party.initial_balance if party and party.initial_balance else Decimal("0")
+    if invoice_type in (INVOICE_TYPE_SELL, INVOICE_TYPE_SELL_RETURN):
         inv_total = party_repo.total_invoiced_net_excluding(party_id, invoice_id)
     else:
-        inv_total = party_repo.total_invoiced_excluding(party_id, invoice_type, invoice_id)
+        inv_total = party_repo.total_purchased_net_excluding(party_id, invoice_id)
     paid_total = party_repo.total_paid_excluding(party_id, invoice_id)
-    return max(Decimal("0"), inv_total - paid_total)
+    return initial_balance + inv_total - paid_total
 
 
 def list_invoices_svc(invoice_repo: InvoiceRepository, party_id=None, invoice_type: str = None, skip: int = 0, limit: int = 100) -> dict:
@@ -151,10 +152,41 @@ def create_purchase_invoice_svc(
 
         total = Decimal("0")
         for item in data.items:
+            selling_price = item.selling_price
+            purchase_price = item.purchase_price
+            
+            product = db.execute(select(Product).where(Product.id == item.product_id)).scalar_one()
+            
+            if not selling_price or selling_price <= 0:
+                if product.sell_price and product.sell_price > 0:
+                    selling_price = product.sell_price
+                else:
+                    prev_batch_sell = db.execute(
+                        select(StockBatch).where(StockBatch.product_id == item.product_id, StockBatch.current_selling_price > 0).order_by(StockBatch.id.desc()).limit(1)
+                    ).scalar_one_or_none()
+                    if prev_batch_sell:
+                        selling_price = prev_batch_sell.current_selling_price
+                        
+            if not selling_price or selling_price <= 0:
+                selling_price = Decimal("0")
+
+            if not purchase_price or purchase_price <= 0:
+                if product.purchase_price and product.purchase_price > 0:
+                    purchase_price = product.purchase_price
+                else:
+                    prev_batch_purch = db.execute(
+                        select(StockBatch).where(StockBatch.product_id == item.product_id, StockBatch.purchase_price > 0).order_by(StockBatch.id.desc()).limit(1)
+                    ).scalar_one_or_none()
+                    if prev_batch_purch:
+                        purchase_price = prev_batch_purch.purchase_price
+                        
+            if not purchase_price or purchase_price <= 0:
+                raise HTTPException(status_code=400, detail=f"سعر الشراء غير محدد أو صفر للمنتج ID {item.product_id}. يرجى إدخال سعر شراء صحيح.")
+
             batch = StockBatch(
                 product_id=item.product_id,
-                purchase_price=item.purchase_price,
-                current_selling_price=item.selling_price,
+                purchase_price=purchase_price,
+                current_selling_price=selling_price,
                 initial_quantity=item.quantity,
                 remaining_quantity=item.quantity,
                 tenant_id=tenant_id,
@@ -167,15 +199,15 @@ def create_purchase_invoice_svc(
                 invoice_id=invoice.id,
                 batch_id=batch.id,
                 quantity=item.quantity,
-                unit_price=item.purchase_price,
-                purchase_price=item.purchase_price,
-                sell_price=item.selling_price,
+                unit_price=purchase_price,
+                purchase_price=purchase_price,
+                sell_price=selling_price,
             )
             invoice_repo.add(invoice_item)
-            total += item.purchase_price * item.quantity
+            total += purchase_price * item.quantity
 
-            product = db.execute(select(Product).where(Product.id == item.product_id)).scalar_one()
-            product.last_purchase_price = item.purchase_price
+            product.last_purchase_price = purchase_price
+            product.purchase_price = purchase_price
             invoice_repo.add(product)
 
         invoice.total_amount = total + data.delivery_fee
@@ -254,77 +286,131 @@ def update_invoice_svc(
     db: Session, invoice_repo: InvoiceRepository, batch_repo: BatchRepository,
     invoice: Invoice, data: dict, tenant_id: int
 ) -> dict:
-    new_items = data.get("items")
-    if new_items is not None:
-        if invoice.invoice_type == INVOICE_TYPE_SELL:
-            for old_item in invoice.items:
-                b = batch_repo.get_by_id(old_item.batch_id)
-                if b:
-                    b.remaining_quantity += old_item.quantity
-                invoice_repo.delete(old_item)
-            invoice_repo.flush()
+    try:
+        items_updated = False
+        new_items_total = Decimal("0")
 
-            total = Decimal("0")
-            for item in new_items:
-                batch = batch_repo.get_by_id(item["batch_id"])
-                if not batch:
-                    raise HTTPException(status_code=404, detail=f"Batch {item['batch_id']} not found")
-                unit_price = Decimal(str(item["unit_price"]))
-                qty = Decimal(str(item["quantity"]))
-                if batch.remaining_quantity < qty:
-                    raise HTTPException(status_code=400, detail=f"الكمية المطلوبة غير متوفرة في الدفعة #{batch.id}")
-                batch.remaining_quantity -= qty
-                new_item = InvoiceItem(
-                    invoice_id=invoice.id, batch_id=batch.id,
-                    quantity=qty, unit_price=unit_price,
-                    purchase_price=batch.purchase_price, sell_price=unit_price,
-                )
-                invoice_repo.add(new_item)
-                total += unit_price * qty
-            invoice.total_amount = total
+        # Prevent modification of items if there are associated returns
+        if data.get("items") is not None:
+            for item in invoice.items:
+                returns_count = invoice_repo._db.execute(
+                    select(func.count(InvoiceItem.id)).where(InvoiceItem.original_invoice_item_id == item.id)
+                ).scalar()
+                if returns_count and returns_count > 0:
+                    raise HTTPException(status_code=400, detail="لا يمكن تعديل الفاتورة لوجود مرتجعات مرتبطة بها")
 
-        elif invoice.invoice_type == INVOICE_TYPE_PURCHASE:
-            old_map = {str(item.batch_id): item for item in invoice.items}
-            if len(new_items) != len(invoice.items):
-                raise HTTPException(status_code=400, detail=ERR_CANNOT_MODIFY_PURCHASE_COUNT)
+        new_items = data.get("items")
+        if new_items is not None:
+            items_updated = True
+            if invoice.invoice_type == INVOICE_TYPE_SELL:
+                for old_item in invoice.items:
+                    b = batch_repo.get_by_id(old_item.batch_id)
+                    if b:
+                        b.remaining_quantity += old_item.quantity
+                    invoice_repo.delete(old_item)
+                invoice_repo.flush()
 
-            total = Decimal("0")
-            for item_data in new_items:
-                batch_id = str(item_data.get("batch_id"))
-                new_qty = Decimal(str(item_data.get("quantity", 0)))
-                new_price = Decimal(str(item_data.get("unit_price", 0)))
-                old_item = old_map.get(batch_id)
-                if not old_item:
-                    raise HTTPException(status_code=400, detail=f"البند (دفعة #{batch_id}) غير موجود في الفاتورة")
-                batch = db.execute(select(StockBatch).where(StockBatch.id == int(batch_id))).scalar_one_or_none()
-                if not batch:
-                    raise HTTPException(status_code=404, detail=f"الدفعة #{batch_id} غير موجودة")
-                sold_qty = batch.initial_quantity - batch.remaining_quantity
-                if new_qty < sold_qty:
-                    raise HTTPException(status_code=400, detail=f"الكمية الجديدة ({new_qty}) أقل من الكمية المباعة فعلاً ({sold_qty})")
-                batch.initial_quantity = new_qty
-                batch.remaining_quantity = new_qty - sold_qty
-                batch.purchase_price = new_price
-                old_item.quantity = new_qty
-                old_item.unit_price = new_price
-                old_item.purchase_price = new_price
-                total += new_qty * new_price
-            invoice.total_amount = total
-        else:
-            raise HTTPException(status_code=400, detail=ERR_CANNOT_MODIFY_RETURN)
+                total = Decimal("0")
+                for item in new_items:
+                    batch = batch_repo.get_by_id(item["batch_id"])
+                    if not batch:
+                        raise HTTPException(status_code=404, detail=f"Batch {item['batch_id']} not found")
+                    unit_price = Decimal(str(item["unit_price"]))
+                    qty = Decimal(str(item["quantity"]))
+                    
+                    if qty <= 0:
+                        raise HTTPException(status_code=400, detail="الكمية يجب أن تكون أكبر من الصفر")
+                    if unit_price <= 0:
+                        raise HTTPException(status_code=400, detail="سعر البيع يجب أن يكون أكبر من الصفر")
+                        
+                    if batch.remaining_quantity < qty:
+                        raise HTTPException(status_code=400, detail=f"الكمية المطلوبة غير متوفرة في الدفعة #{batch.id}")
+                    batch.remaining_quantity -= qty
+                    new_item = InvoiceItem(
+                        invoice_id=invoice.id, batch_id=batch.id,
+                        quantity=qty, unit_price=unit_price,
+                        purchase_price=batch.purchase_price, sell_price=unit_price,
+                    )
+                    invoice_repo.add(new_item)
+                    total += unit_price * qty
+                new_items_total = total
 
-    delivery_fee = data.get("delivery_fee")
-    if delivery_fee is not None:
-        new_fee = Decimal(str(delivery_fee))
-        old_fee = invoice.delivery_fee or Decimal("0")
-        invoice.delivery_fee = new_fee
-        invoice.total_amount = (invoice.total_amount or Decimal("0")) - old_fee + new_fee
+            elif invoice.invoice_type == INVOICE_TYPE_PURCHASE:
+                old_map = {str(item.batch_id): item for item in invoice.items}
+                if len(new_items) != len(invoice.items):
+                    raise HTTPException(status_code=400, detail=ERR_CANNOT_MODIFY_PURCHASE_COUNT)
 
-    footer = data.get("footer_custom_text")
-    if footer is not None:
-        invoice.footer_custom_text = footer
+                total = Decimal("0")
+                for item_data in new_items:
+                    batch_id = str(item_data.get("batch_id"))
+                    new_qty = Decimal(str(item_data.get("quantity", 0)))
+                    new_price = Decimal(str(item_data.get("unit_price", 0)))
+                    new_sell_price = Decimal(str(item_data.get("sell_price", 0)))
+                    
+                    old_item = old_map.get(batch_id)
+                    if not old_item:
+                        raise HTTPException(status_code=400, detail=f"البند (دفعة #{batch_id}) غير موجود في الفاتورة")
+                    batch = db.execute(select(StockBatch).where(StockBatch.id == int(batch_id))).scalar_one_or_none()
+                    if not batch:
+                        raise HTTPException(status_code=404, detail=f"الدفعة #{batch_id} غير موجودة")
+                    sold_qty = batch.initial_quantity - batch.remaining_quantity
+                    
+                    if new_qty <= 0:
+                        raise HTTPException(status_code=400, detail="الكمية يجب أن تكون أكبر من الصفر")
+                    if new_price <= 0:
+                        raise HTTPException(status_code=400, detail="سعر الشراء يجب أن يكون أكبر من الصفر")
+                        
+                    if new_qty < sold_qty:
+                        raise HTTPException(status_code=400, detail=f"الكمية الجديدة ({new_qty}) أقل من الكمية المباعة فعلاً ({sold_qty})")
+                    batch.initial_quantity = new_qty
+                    batch.remaining_quantity = new_qty - sold_qty
+                    batch.purchase_price = new_price
+                    old_item.quantity = new_qty
+                    old_item.unit_price = new_price
+                    old_item.purchase_price = new_price
+                    
+                    if new_sell_price > 0:
+                        batch.current_selling_price = new_sell_price
+                        old_item.sell_price = new_sell_price
+                    
+                    # Update product's last purchase price and sell price
+                    if batch.product:
+                        batch.product.last_purchase_price = new_price
+                        batch.product.purchase_price = new_price
+                        if new_sell_price > 0:
+                            batch.product.sell_price = new_sell_price
+                        
+                    total += new_qty * new_price
+                new_items_total = total
+            else:
+                raise HTTPException(status_code=400, detail=ERR_CANNOT_MODIFY_RETURN)
 
-    invoice_repo.commit()
+        delivery_fee = data.get("delivery_fee")
+        if delivery_fee is not None:
+            new_fee = Decimal(str(delivery_fee))
+            if new_fee < 0:
+                raise HTTPException(status_code=400, detail="رسوم التوصيل لا يمكن أن تكون سالبة")
+            if items_updated:
+                invoice.delivery_fee = new_fee
+                invoice.total_amount = new_items_total + new_fee
+            else:
+                old_fee = invoice.delivery_fee or Decimal("0")
+                invoice.delivery_fee = new_fee
+                invoice.total_amount = (invoice.total_amount or Decimal("0")) - old_fee + new_fee
+        elif items_updated:
+            # Items were updated but delivery fee was not, retain the old delivery fee
+            old_fee = invoice.delivery_fee or Decimal("0")
+            invoice.total_amount = new_items_total + old_fee
+
+        footer = data.get("footer_custom_text")
+        if footer is not None:
+            invoice.footer_custom_text = footer
+
+        invoice_repo.commit()
+    except Exception:
+        invoice_repo.rollback()
+        raise
+
     # Re-fetch with joinedload so item.batch.product is always available
     invoice = invoice_repo.get_by_id(invoice.id)
 
@@ -341,21 +427,21 @@ def update_invoice_svc(
             "id": i.id, "batch_id": i.batch_id,
             "product_id": i.batch.product_id if i.batch else None,
             "product_name": product_name,
-            "quantity": float(i.quantity), "unit_price": float(i.unit_price),
-            "purchase_price": float(i.purchase_price) if i.purchase_price else None,
-            "sell_price": float(i.sell_price) if i.sell_price else None,
-            "already_returned_qty": float(already_returned_qty),
+            "quantity": i.quantity, "unit_price": i.unit_price,
+            "purchase_price": i.purchase_price if i.purchase_price else None,
+            "sell_price": i.sell_price if i.sell_price else None,
+            "already_returned_qty": already_returned_qty,
         })
 
     return {
         "id": invoice.id,
         "party_id": invoice.party_id,
         "invoice_type": invoice.invoice_type.value if invoice.invoice_type else None,
-        "total_amount": float(invoice.total_amount),
-        "delivery_fee": float(invoice.delivery_fee) if invoice.delivery_fee else 0,
+        "total_amount": invoice.total_amount,
+        "delivery_fee": invoice.delivery_fee if invoice.delivery_fee else Decimal("0"),
         "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
-        "paid_amount": float(paid),
-        "balance": float(balance),
+        "paid_amount": paid,
+        "balance": balance,
         "status": _invoice_status(paid, invoice.total_amount),
         "items": items_out,
     }
@@ -364,40 +450,52 @@ def update_invoice_svc(
 def delete_invoice_svc(
     invoice_repo: InvoiceRepository, batch_repo: BatchRepository, invoice: Invoice
 ) -> None:
-    for item in invoice.items:
-        returns_count = invoice_repo._db.execute(
-            select(func.count(InvoiceItem.id)).where(InvoiceItem.original_invoice_item_id == item.id)
-        ).scalar()
-        if returns_count and returns_count > 0:
-            raise HTTPException(status_code=400, detail="لا يمكن حذف الفاتورة لوجود مرتجعات مرتبطة بها")
-
-    batches_to_delete = []
-    if invoice.invoice_type in (INVOICE_TYPE_SELL, INVOICE_TYPE_PURCHASE_RETURN):
+    try:
         for item in invoice.items:
-            b = batch_repo.get_by_id(item.batch_id)
-            if b:
-                b.remaining_quantity += item.quantity
-    elif invoice.invoice_type in (INVOICE_TYPE_PURCHASE, INVOICE_TYPE_SELL_RETURN):
+            returns_count = invoice_repo._db.execute(
+                select(func.count(InvoiceItem.id)).where(InvoiceItem.original_invoice_item_id == item.id)
+            ).scalar()
+            if returns_count and returns_count > 0:
+                raise HTTPException(status_code=400, detail="لا يمكن حذف الفاتورة لوجود مرتجعات مرتبطة بها")
+
+        batches_to_delete = []
+        if invoice.invoice_type in (INVOICE_TYPE_SELL, INVOICE_TYPE_PURCHASE_RETURN):
+            for item in invoice.items:
+                b = batch_repo.get_by_id(item.batch_id)
+                if b:
+                    b.remaining_quantity += item.quantity
+        elif invoice.invoice_type in (INVOICE_TYPE_PURCHASE, INVOICE_TYPE_SELL_RETURN):
+            for item in invoice.items:
+                b = batch_repo.get_by_id(item.batch_id)
+                if b:
+                    # Check if any OTHER invoice item references this batch
+                    other_items_count = invoice_repo._db.execute(
+                        select(func.count(InvoiceItem.id))
+                        .where(InvoiceItem.batch_id == b.id, InvoiceItem.invoice_id != invoice.id)
+                    ).scalar()
+                    if other_items_count and other_items_count > 0:
+                        raise HTTPException(
+                            status_code=400, 
+                            detail=ERR_CANNOT_DELETE_HAS_STOCK
+                        )
+                    batches_to_delete.append(b)
+
         for item in invoice.items:
-            b = batch_repo.get_by_id(item.batch_id)
-            if b:
-                if b.remaining_quantity < b.initial_quantity:
-                    raise HTTPException(status_code=400, detail=ERR_CANNOT_DELETE_HAS_STOCK)
-                batches_to_delete.append(b)
+            invoice_repo.delete(item)
+        invoice_repo.flush()
 
-    for item in invoice.items:
-        invoice_repo.delete(item)
-    invoice_repo.flush()
+        for b in batches_to_delete:
+            batch_repo.delete(b)
 
-    for b in batches_to_delete:
-        batch_repo.delete(b)
+        for payment in invoice.payments:
+            invoice_repo.delete(payment)
+        invoice_repo.flush()
 
-    for payment in invoice.payments:
-        invoice_repo.delete(payment)
-    invoice_repo.flush()
-
-    invoice_repo.delete(invoice)
-    invoice_repo.commit()
+        invoice_repo.delete(invoice)
+        invoice_repo.commit()
+    except Exception:
+        invoice_repo.rollback()
+        raise
 
 
 def process_return_svc(
@@ -509,12 +607,7 @@ def process_return_svc(
                     party_id=orig_invoice.party_id,
                 )
                 
-                product_last_price = (
-                    orig_batch.product.last_purchase_price
-                    if orig_batch and orig_batch.product and orig_batch.product.last_purchase_price
-                    else orig_item.unit_price
-                )
-                return_unit_price = product_last_price
+                return_unit_price = orig_item.unit_price
                 
                 for batch, alloc_qty in allocations:
                     batch.remaining_quantity -= alloc_qty

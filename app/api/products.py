@@ -82,58 +82,8 @@ def list_products(
         return []
 
     product_ids = [p.id for p in products]
-    tenant_id = current_user.tenant_id
-
-    # 1. Fetch latest batch for fallback prices
-    latest_batch_subq = (
-        select(
-            StockBatch.product_id,
-            func.max(StockBatch.id).label("max_batch_id")
-        )
-        .where(
-            StockBatch.product_id.in_(product_ids),
-            StockBatch.tenant_id == tenant_id
-        )
-        .group_by(StockBatch.product_id)
-        .subquery()
-    )
-
-    latest_batches = db.execute(
-        select(StockBatch)
-        .join(latest_batch_subq, (StockBatch.id == latest_batch_subq.c.max_batch_id))
-    ).scalars().all()
-
-    latest_batch_by_product = {batch.product_id: batch for batch in latest_batches}
-
-    # 2. Fetch the latest supplier for all products
-    supplier_subq = (
-        select(
-            StockBatch.product_id,
-            func.max(InvoiceItem.id).label("max_item_id")
-        )
-        .join(InvoiceItem, StockBatch.id == InvoiceItem.batch_id)
-        .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
-        .where(
-            Invoice.invoice_type == InvoiceType.PURCHASE,
-            Invoice.tenant_id == tenant_id,
-            StockBatch.product_id.in_(product_ids)
-        )
-        .group_by(StockBatch.product_id)
-        .subquery()
-    )
-
-    supplier_stmt = (
-        select(
-            StockBatch.product_id,
-            Party.name
-        )
-        .join(InvoiceItem, StockBatch.id == InvoiceItem.batch_id)
-        .join(supplier_subq, (StockBatch.product_id == supplier_subq.c.product_id) & (InvoiceItem.id == supplier_subq.c.max_item_id))
-        .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
-        .join(Party, Party.id == Invoice.party_id)
-    )
-    supplier_rows = db.execute(supplier_stmt).all()
-    supplier_dict = {row.product_id: row.name for row in supplier_rows}
+    latest_batch_by_product = prod_repo.get_latest_batches_for_products(product_ids)
+    supplier_dict = prod_repo.get_latest_suppliers_for_products(product_ids)
 
     result = []
     for product in products:

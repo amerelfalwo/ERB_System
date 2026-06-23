@@ -52,22 +52,52 @@ async def lifespan(app: FastAPI):
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS sell_price NUMERIC(10, 2) DEFAULT 0;",
         "ALTER TABLE parties ADD COLUMN IF NOT EXISTS notes TEXT;",
         "ALTER TABLE parties ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(12, 2) DEFAULT 0.00;",
-        "ALTER TABLE stock_batches ADD COLUMN IF NOT EXISTS party_id INTEGER REFERENCES parties(id);"
+        "ALTER TABLE stock_batches ADD COLUMN IF NOT EXISTS party_id INTEGER REFERENCES parties(id);",
+        "ALTER TABLE stock_batches ADD CONSTRAINT stock_batches_party_id_fkey FOREIGN KEY (party_id) REFERENCES parties(id) ON DELETE SET NULL;",
+        "ALTER TABLE invoices DROP CONSTRAINT IF EXISTS invoices_party_id_fkey;",
+        "ALTER TABLE invoices ADD CONSTRAINT invoices_party_id_fkey FOREIGN KEY (party_id) REFERENCES parties(id) ON DELETE RESTRICT;",
+        "ALTER TABLE stock_batches DROP CONSTRAINT IF EXISTS stock_batches_product_id_fkey;",
+        "ALTER TABLE stock_batches ADD CONSTRAINT stock_batches_product_id_fkey FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT;",
+        "ALTER TABLE invoice_items DROP CONSTRAINT IF EXISTS invoice_items_invoice_id_fkey;",
+        "ALTER TABLE invoice_items ADD CONSTRAINT invoice_items_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE;",
+        "ALTER TABLE invoice_items DROP CONSTRAINT IF EXISTS invoice_items_batch_id_fkey;",
+        "ALTER TABLE invoice_items ADD CONSTRAINT invoice_items_batch_id_fkey FOREIGN KEY (batch_id) REFERENCES stock_batches(id) ON DELETE RESTRICT;",
+        "ALTER TABLE invoice_items DROP CONSTRAINT IF EXISTS invoice_items_original_invoice_item_id_fkey;",
+        "ALTER TABLE invoice_items ADD CONSTRAINT invoice_items_original_invoice_item_id_fkey FOREIGN KEY (original_invoice_item_id) REFERENCES invoice_items(id) ON DELETE SET NULL;",
+        "ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_invoice_id_fkey;",
+        "ALTER TABLE payments ADD CONSTRAINT payments_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE;",
+        "ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_party_id_fkey;",
+        "ALTER TABLE payments ADD CONSTRAINT payments_party_id_fkey FOREIGN KEY (party_id) REFERENCES parties(id) ON DELETE RESTRICT;",
+        "UPDATE stock_batches SET tenant_id = 1 WHERE tenant_id IS NULL;",
+        "UPDATE products SET tenant_id = 1 WHERE tenant_id IS NULL;",
+        "UPDATE parties SET tenant_id = 1 WHERE tenant_id IS NULL;",
+        "UPDATE invoices SET tenant_id = 1 WHERE tenant_id IS NULL;"
     ]
 
     log_dir = BASE_DIR / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file_path = log_dir / "migration_run.log"
 
+    # Use direct connection port 5432 for DDL migrations in Supabase
+    # as port 6543 (transaction pooler) can cause silent rollbacks or failures for ALTER TABLE.
+    migration_db_url = str(engine.url)
+    if "pooler.supabase.com" in migration_db_url and ":6543" in migration_db_url:
+        migration_db_url = migration_db_url.replace(":6543", ":5432")
+    
+    from sqlalchemy import create_engine
+    migration_engine = create_engine(migration_db_url)
+
     with open(log_file_path, "w") as log_file:
-        log_file.write("Starting migrations...\n")
+        log_file.write("Starting migrations with direct connection...\n")
         for migration in migrations:
             try:
-                with engine.begin() as conn:
+                with migration_engine.begin() as conn:
                     conn.execute(text(migration))
                 log_file.write(f"SUCCESS: {migration}\n")
             except Exception as e:
                 log_file.write(f"FAILED: {migration}\nError: {e}\nTraceback:\n{traceback.format_exc()}\n\n")
+    
+    migration_engine.dispose()
 
     yield
 
@@ -102,9 +132,6 @@ async def health_check():
     return {"status": "healthy"}
 
 
-@app.get("/migration-test")
-async def migration_test():
-    return {"status": "endpoint added successfully"}
 
 
 # ── Public routes ────────────────────────────────────────────────────────────

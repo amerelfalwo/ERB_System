@@ -234,51 +234,20 @@ def create_party_payment(
         raise HTTPException(status_code=404, detail="Party not found")
 
     amount_paid = Decimal(str(data.get("amount_paid", 0)))
-    if amount_paid <= 0:
+    if amount_paid == 0:
         raise HTTPException(status_code=400, detail="Invalid payment amount")
 
-    if party.party_type == PartyType.CLIENT:
-        purchase_type = InvoiceType.SELL
-        return_type = InvoiceType.SELL_RETURN
-    else:
-        purchase_type = InvoiceType.PURCHASE
-        return_type = InvoiceType.PURCHASE_RETURN
-
-    total_purchases = Decimal(str(db.execute(
-        select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
-            Invoice.party_id == party_id,
-            Invoice.invoice_type == purchase_type,
-            Invoice.tenant_id == current_user.tenant_id,
+    from app.services.payments import create_payment
+    from app.schemas.payment import PaymentCreate
+    
+    try:
+        create_payment(
+            db=db,
+            data=PaymentCreate(party_id=party.id, amount=amount_paid),
+            tenant_id=current_user.tenant_id
         )
-    ).scalar_one()))
-
-    total_returns = Decimal(str(db.execute(
-        select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
-            Invoice.party_id == party_id,
-            Invoice.invoice_type == return_type,
-            Invoice.tenant_id == current_user.tenant_id,
-        )
-    ).scalar_one()))
-
-    total_paid = Decimal(str(db.execute(
-        select(func.coalesce(func.sum(Payment.amount), 0)).where(
-            Payment.party_id == party_id,
-        )
-    ).scalar_one()))
-
-    initial = Decimal(str(party.initial_balance or 0))
-    balance = initial + total_purchases - total_returns - total_paid
-
-    if amount_paid > balance:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot pay more than the total outstanding debt.",
-        )
-
-    payment = Payment(party_id=party.id, amount=amount_paid)
-    db.add(payment)
-    db.commit()
-    db.refresh(party)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     return party_summary(party_id, db, current_user)
 
@@ -304,30 +273,6 @@ def party_summary(
 
     initial = Decimal(str(party.initial_balance or 0))
 
-    total_purchases = Decimal(str(db.execute(
-        select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
-            Invoice.party_id == party_id,
-            Invoice.invoice_type == purchase_type,
-            Invoice.tenant_id == current_user.tenant_id,
-        )
-    ).scalar_one()))
-
-    total_returns = Decimal(str(db.execute(
-        select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
-            Invoice.party_id == party_id,
-            Invoice.invoice_type == return_type,
-            Invoice.tenant_id == current_user.tenant_id,
-        )
-    ).scalar_one()))
-
-    total_paid = Decimal(str(db.execute(
-        select(func.coalesce(func.sum(Payment.amount), 0)).where(
-            Payment.party_id == party_id,
-        )
-    ).scalar_one()))
-
-    balance = initial + total_purchases - total_returns - total_paid
-
     invoices = db.execute(
         select(Invoice).options(
             selectinload(Invoice.items).joinedload(InvoiceItem.batch).joinedload(StockBatch.product)
@@ -337,17 +282,33 @@ def party_summary(
         ).order_by(Invoice.created_at.desc())
     ).unique().scalars().all()
 
-    invoice_ids = [inv.id for inv in invoices]
-    
+    total_purchases = Decimal("0")
+    total_returns = Decimal("0")
+    for inv in invoices:
+        if inv.invoice_type == purchase_type:
+            total_purchases += inv.total_amount
+        elif inv.invoice_type == return_type:
+            total_returns += inv.total_amount
+
+    payments = db.execute(
+        select(Payment).where(Payment.party_id == party_id).order_by(Payment.payment_date.desc())
+    ).scalars().all()
+
+    total_paid = Decimal("0")
     payments_by_invoice = {}
-    if invoice_ids:
-        payment_sums = db.execute(
-            select(Payment.invoice_id, func.coalesce(func.sum(Payment.amount), 0))
-            .where(Payment.invoice_id.in_(invoice_ids))
-            .group_by(Payment.invoice_id)
-        ).all()
-        for inv_id, amt in payment_sums:
-            payments_by_invoice[inv_id] = amt
+    payment_list = []
+    for p in payments:
+        total_paid += p.amount
+        if p.invoice_id:
+            payments_by_invoice[p.invoice_id] = payments_by_invoice.get(p.invoice_id, Decimal("0")) + p.amount
+        payment_list.append({
+            "id": p.id,
+            "invoice_id": p.invoice_id,
+            "amount": float(p.amount),
+            "payment_date": p.payment_date.isoformat() if p.payment_date else None,
+        })
+
+    balance = initial + total_purchases - total_returns - total_paid
 
     invoice_list = []
     for inv in invoices:
@@ -405,6 +366,7 @@ def party_summary(
 
     product_summary = []
     if product_ids:
+        from sqlalchemy import case
         products = db.execute(
             select(Product).where(
                 Product.id.in_(product_ids), 
@@ -412,8 +374,12 @@ def party_summary(
             )
         ).scalars().all()
         
-        stock_sums = db.execute(
-            select(StockBatch.product_id, func.coalesce(func.sum(StockBatch.remaining_quantity), 0))
+        stock_stats = db.execute(
+            select(
+                StockBatch.product_id,
+                func.coalesce(func.sum(StockBatch.remaining_quantity), 0),
+                func.coalesce(func.sum(case((StockBatch.party_id == party_id, StockBatch.remaining_quantity), else_=0)), 0)
+            )
             .where(
                 StockBatch.product_id.in_(product_ids), 
                 StockBatch.tenant_id == current_user.tenant_id
@@ -421,18 +387,8 @@ def party_summary(
             .group_by(StockBatch.product_id)
         ).all()
         
-        supplier_stock_sums = db.execute(
-            select(StockBatch.product_id, func.coalesce(func.sum(StockBatch.remaining_quantity), 0))
-            .where(
-                StockBatch.product_id.in_(product_ids), 
-                StockBatch.tenant_id == current_user.tenant_id,
-                StockBatch.party_id == party_id
-            )
-            .group_by(StockBatch.product_id)
-        ).all()
-        
-        stock_map = {pid: qty for pid, qty in stock_sums}
-        supplier_stock_map = {pid: qty for pid, qty in supplier_stock_sums}
+        stock_map = {pid: qty for pid, qty, _ in stock_stats}
+        supplier_stock_map = {pid: sqty for pid, _, sqty in stock_stats}
         
         for p in products:
             product_summary.append({
@@ -444,20 +400,6 @@ def party_summary(
             })
 
     total_profit = sum(inv.get("invoice_profit", 0) for inv in invoice_list)
-
-    payments = db.execute(
-        select(Payment).where(Payment.party_id == party_id).order_by(Payment.payment_date.desc())
-    ).scalars().all()
-
-    payment_list = [
-        {
-            "id": p.id,
-            "invoice_id": p.invoice_id,
-            "amount": float(p.amount),
-            "payment_date": p.payment_date.isoformat() if p.payment_date else None,
-        }
-        for p in payments
-    ]
 
     return {
         "party": {

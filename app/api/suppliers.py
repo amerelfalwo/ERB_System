@@ -138,47 +138,20 @@ def create_supplier_payment(
         raise HTTPException(status_code=404, detail="Supplier not found")
 
     amount_paid = Decimal(str(data.get("amount_paid", 0)))
-    if amount_paid <= 0:
+    if amount_paid == 0:
         raise HTTPException(status_code=400, detail="Invalid payment amount")
 
-    purchase_type = InvoiceType.PURCHASE
-    return_type = InvoiceType.PURCHASE_RETURN
-
-    total_purchases = Decimal(str(db.execute(
-        select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
-            Invoice.party_id == supplier_id,
-            Invoice.invoice_type == purchase_type,
-            Invoice.tenant_id == current_user.tenant_id,
+    from app.services.payments import create_payment
+    from app.schemas.payment import PaymentCreate
+    
+    try:
+        create_payment(
+            db=db,
+            data=PaymentCreate(party_id=party.id, amount=amount_paid),
+            tenant_id=current_user.tenant_id
         )
-    ).scalar_one()))
-
-    total_returns = Decimal(str(db.execute(
-        select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(
-            Invoice.party_id == supplier_id,
-            Invoice.invoice_type == return_type,
-            Invoice.tenant_id == current_user.tenant_id,
-        )
-    ).scalar_one()))
-
-    total_paid = Decimal(str(db.execute(
-        select(func.coalesce(func.sum(Payment.amount), 0)).where(
-            Payment.party_id == supplier_id,
-        )
-    ).scalar_one()))
-
-    initial = Decimal(str(party.initial_balance or 0))
-    balance = initial + total_purchases - total_returns - total_paid
-
-    if amount_paid > balance:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot pay more than the total outstanding debt.",
-        )
-
-    payment = Payment(party_id=party.id, amount=amount_paid)
-    db.add(payment)
-    db.commit()
-    db.refresh(party)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     return supplier_summary(supplier_id, db, current_user)
 
@@ -266,7 +239,8 @@ def supplier_summary(
     invoice_list = []
     for inv in invoices:
         inv_paid = payments_by_invoice.get(inv.id, Decimal("0"))
-        inv_balance = inv.total_amount - inv_paid
+        total_amt = inv.total_amount if inv.total_amount is not None else Decimal("0")
+        inv_balance = total_amt - inv_paid
         if inv_balance <= 0:
             status = "paid"
         elif inv_paid > 0:
@@ -279,7 +253,7 @@ def supplier_summary(
         invoice_list.append({
             "id": inv.id,
             "invoice_type": inv.invoice_type.value if inv.invoice_type else None,
-            "total_amount": float(inv.total_amount),
+            "total_amount": float(total_amt),
             "paid_amount": float(inv_paid),
             "balance": float(inv_balance),
             "status": status,
@@ -290,10 +264,10 @@ def supplier_summary(
                     "id": item.id,
                     "batch_id": item.batch_id,
                     "product_id": item.batch.product_id if item.batch else None,
-                    "quantity": float(item.quantity),
-                    "unit_price": float(item.unit_price),
-                    "purchase_price": float(item.purchase_price) if item.purchase_price else None,
-                    "sell_price": float(item.sell_price) if item.sell_price else None,
+                    "quantity": float(item.quantity or 0),
+                    "unit_price": float(item.unit_price or 0),
+                    "purchase_price": float(item.purchase_price) if item.purchase_price is not None else None,
+                    "sell_price": float(item.sell_price) if item.sell_price is not None else None,
                     "product_name": item.batch.product.name if item.batch and item.batch.product else None,
                     "already_returned_qty": float(returned_qty_map.get(item.id, Decimal("0"))),
                 }
@@ -314,7 +288,7 @@ def supplier_summary(
                             "remaining_stock": Decimal("0"),
                             "last_purchase_price": item.batch.product.last_purchase_price if item.batch.product else item.purchase_price
                         }
-                    product_map[pid]["remaining_stock"] += item.batch.remaining_quantity
+                    product_map[pid]["remaining_stock"] += (item.batch.remaining_quantity if item.batch.remaining_quantity is not None else Decimal("0"))
 
     product_ids = list(product_map.keys())
     stock_map = {}

@@ -170,7 +170,7 @@ async def upload_tenant_logo(
     file_path = LOGOS_DIR / filename
     content = await file.read()
     file_path.write_bytes(content)
-    logo_url = str(request.url_for("static", path=f"logos/{filename}"))
+    logo_url = f"/static/logos/{filename}"
     tenant.logo_url = logo_url
     db.commit()
     db.refresh(tenant)

@@ -14,7 +14,7 @@ from sqlalchemy import select, func
 from app.repositories.base import (
     BatchRepository, InvoiceRepository, PartyRepository, ProductRepository, PaymentRepository
 )
-from app.schemas.invoice import InvoiceCreatePurchase, InvoiceCreateSell, InvoiceItemOut, InvoiceOut
+from app.schemas.invoice import InvoiceCreatePurchase, InvoiceCreateSell, InvoiceItemOut, InvoiceOut, PaymentOut, InvoiceListResponse
 from app.services.invoice_service import (
     list_invoices_svc, create_purchase_invoice_svc, create_sell_invoice_svc,
     update_invoice_svc, delete_invoice_svc, process_return_svc,
@@ -31,14 +31,7 @@ def _invoice_out(invoice, invoice_repo: InvoiceRepository, party_repo: PartyRepo
 
     # Bulk fetch already returned quantities for all invoice items in one query
     item_ids = [item.id for item in invoice.items]
-    returned_qty_map = {}
-    if item_ids:
-        rows = invoice_repo._db.execute(
-            select(InvoiceItem.original_invoice_item_id, func.sum(InvoiceItem.quantity))
-            .where(InvoiceItem.original_invoice_item_id.in_(item_ids))
-            .group_by(InvoiceItem.original_invoice_item_id)
-        ).all()
-        returned_qty_map = {orig_id: qty for orig_id, qty in rows}
+    returned_qty_map = invoice_repo.get_returned_quantities_for_items(item_ids)
 
     # Resolve product_name for each item via batch → product relationship
     items_out = []
@@ -82,7 +75,7 @@ def _invoice_out(invoice, invoice_repo: InvoiceRepository, party_repo: PartyRepo
     )
 
 
-@router.get("")
+@router.get("", response_model=InvoiceListResponse)
 def list_invoices(
     party_id: int = None,
     invoice_type: str = None,
@@ -153,7 +146,7 @@ def get_invoice(
     return _invoice_out(invoice, inv_repo, party_repo)
 
 
-@router.patch("/{invoice_id}")
+@router.patch("/{invoice_id}", response_model=InvoiceOut)
 def update_invoice(
     invoice_id: int,
     data: dict,
@@ -182,7 +175,7 @@ def delete_invoice(
     delete_invoice_svc(inv_repo, batch_repo, invoice)
 
 
-@router.get("/{invoice_id}/payments")
+@router.get("/{invoice_id}/payments", response_model=list[PaymentOut])
 def list_invoice_payments(
     invoice_id: int,
     db: Session = Depends(get_db),
@@ -195,14 +188,14 @@ def list_invoice_payments(
     return [
         {
             "id": p.id,
-            "amount": float(p.amount),
+            "amount": p.amount,
             "payment_date": p.payment_date.isoformat() if p.payment_date else None,
         }
         for p in invoice.payments
     ]
 
 
-@router.patch("/{invoice_id}/payments/{payment_id}")
+@router.patch("/{invoice_id}/payments/{payment_id}", response_model=PaymentOut)
 def update_payment(
     invoice_id: int,
     payment_id: int,
@@ -233,7 +226,7 @@ def update_payment(
     pay_repo.refresh(payment)
     return {
         "id": payment.id,
-        "amount": float(payment.amount),
+        "amount": payment.amount,
         "payment_date": payment.payment_date.isoformat() if payment.payment_date else None,
     }
 
