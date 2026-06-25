@@ -91,6 +91,19 @@ class InvoiceRepository:
         ).all()
         return {pid: name for pid, name in rows}
 
+    def get_returned_quantities_for_items(self, item_ids: List[int]) -> dict:
+        if not item_ids:
+            return {}
+        rows = self._db.execute(
+            select(InvoiceItem.original_invoice_item_id, func.coalesce(func.sum(InvoiceItem.quantity), 0))
+            .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+            .where(
+                InvoiceItem.original_invoice_item_id.in_(item_ids),
+                Invoice.tenant_id == self._tid
+            )
+            .group_by(InvoiceItem.original_invoice_item_id)
+        ).all()
+        return {item_id: Decimal(str(qty)) for item_id, qty in rows}
 
     def get_paid_amount(self, invoice_id: int) -> Decimal:
         return Decimal(str(
