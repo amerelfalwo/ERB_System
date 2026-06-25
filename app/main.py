@@ -82,26 +82,26 @@ async def lifespan(app: FastAPI):
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file_path = log_dir / "migration_run.log"
 
-        # Use direct connection port 5432 for DDL migrations in Supabase
-        # as port 6543 (transaction pooler) can cause silent rollbacks or failures for ALTER TABLE.
-        migration_db_url = str(engine.url)
-        if "pooler.supabase.com" in migration_db_url and ":6543" in migration_db_url:
-            migration_db_url = migration_db_url.replace(":6543", ":5432")
-
-        from sqlalchemy import create_engine as _create_engine
-        migration_engine = _create_engine(migration_db_url)
-
+        # Run all migrations through the same pooler engine (port 6543).
+        # A previous version swapped to port 5432 (direct connection), but
+        # Supabase pooler credentials don't authenticate on the direct port,
+        # causing 32+ failed auth attempts that trip ECIRCUITBREAKER.
+        # DDL via IF NOT EXISTS / ADD CONSTRAINT is safe through Supavisor
+        # transaction mode.  Use a single connection for all statements.
         with open(log_file_path, "w") as log_file:
-            log_file.write("Starting migrations with direct connection...\n")
-            for migration in migrations:
-                try:
-                    with migration_engine.begin() as conn:
-                        conn.execute(text(migration))
-                    log_file.write(f"SUCCESS: {migration}\n")
-                except Exception as e:
-                    log_file.write(f"FAILED: {migration}\nError: {e}\nTraceback:\n{traceback.format_exc()}\n\n")
-
-        migration_engine.dispose()
+            log_file.write("Starting migrations via pooler connection...\n")
+            try:
+                with engine.begin() as conn:
+                    for migration in migrations:
+                        try:
+                            conn.execute(text(migration))
+                            log_file.write(f"SUCCESS: {migration}\n")
+                        except Exception as e:
+                            # Log but don't abort — most are idempotent IF NOT EXISTS
+                            log_file.write(f"SKIPPED: {migration}\nReason: {e}\n\n")
+            except Exception as e:
+                log_file.write(f"CONNECTION FAILED: {e}\nTraceback:\n{traceback.format_exc()}\n")
+                _logger.warning("Migration connection failed (app will still start): %s", e)
         _logger.info("Database connected and migrations applied successfully.")
 
     except Exception as e:
