@@ -5,6 +5,7 @@ Each sub-module owns one domain's FastAPI APIRouter.
 Import the routers from here and include them in app/main.py.
 """
 
+from .admin import router as admin
 from .auth import router as auth
 from .batches import router as batches
 from .customers import router as customers
@@ -18,6 +19,7 @@ from .reports import router as reports
 from .tenants import router as tenants
 
 __all__ = [
+    "admin",
     "auth",
     "batches",
     "customers",

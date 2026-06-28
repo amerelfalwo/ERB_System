@@ -63,6 +63,12 @@ def login_access_token(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Tenant is inactive.",
         )
+    # Super admins bypass the approval gate
+    if not tenant.is_approved and user.role != "super_admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account is pending approval. Please wait for admin review.",
+        )
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.username, "tenant_id": user.tenant_id}, expires_delta=access_token_expires

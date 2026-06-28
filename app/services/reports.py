@@ -19,11 +19,21 @@ from app.schemas.report import (
 )
 
 
-def profit_report(db: Session, tenant_id: int = None) -> ProfitReportOut:
+def profit_report(db: Session, tenant_id: int = None, start_date: str = None, end_date: str = None) -> ProfitReportOut:
+    from datetime import datetime
+    
+    dt_start = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
+    dt_end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59) if end_date else None
+
     # 1. Fetch all invoices to account for delivery fees correctly
     inv_stmt = select(Invoice).where(Invoice.invoice_type.in_([InvoiceType.SELL, InvoiceType.SELL_RETURN]))
     if tenant_id is not None:
         inv_stmt = inv_stmt.where(Invoice.tenant_id == tenant_id)
+    if dt_start:
+        inv_stmt = inv_stmt.where(Invoice.created_at >= dt_start)
+    if dt_end:
+        inv_stmt = inv_stmt.where(Invoice.created_at <= dt_end)
+
     invoices = db.execute(inv_stmt).scalars().all()
     
     total_profit = Decimal("0")
@@ -42,6 +52,10 @@ def profit_report(db: Session, tenant_id: int = None) -> ProfitReportOut:
     )
     if tenant_id is not None:
         stmt = stmt.where(Invoice.tenant_id == tenant_id)
+    if dt_start:
+        stmt = stmt.where(Invoice.created_at >= dt_start)
+    if dt_end:
+        stmt = stmt.where(Invoice.created_at <= dt_end)
     rows = db.execute(stmt).all()
 
     items: List[ProfitItem] = []
@@ -260,27 +274,30 @@ def party_statement(db: Session, party_id: int, tenant_id: int) -> StatementOut:
 
 
 
-def dashboard_analytics(db: Session, tenant_id: int) -> DashboardAnalyticsOut:
+def dashboard_analytics(db: Session, tenant_id: int, start_date: str = None, end_date: str = None) -> DashboardAnalyticsOut:
     from sqlalchemy import extract, case, literal_column
     from app.models.domain import Party, PartyType
+    from datetime import datetime
 
-    profit_data = profit_report(db, tenant_id)
+    dt_start = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
+    dt_end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59) if end_date else None
+
+    profit_data = profit_report(db, tenant_id, start_date, end_date)
     inventory_data = inventory_report(db, tenant_id)
 
     # ── Outstanding balances: calculate via PartyType and Invoice totals + Payments ──
-    invoice_sums = db.execute(
-        select(Party.party_type, Invoice.invoice_type, func.coalesce(func.sum(Invoice.total_amount), 0))
-        .join(Party, Party.id == Invoice.party_id)
-        .where(Invoice.tenant_id == tenant_id)
-        .group_by(Party.party_type, Invoice.invoice_type)
-    ).all()
+    inv_sum_stmt = select(Party.party_type, Invoice.invoice_type, func.coalesce(func.sum(Invoice.total_amount), 0)).join(Party, Party.id == Invoice.party_id).where(Invoice.tenant_id == tenant_id)
+    pay_sum_stmt = select(Party.party_type, func.coalesce(func.sum(Payment.amount), 0)).join(Party, Party.id == Payment.party_id).where(Party.tenant_id == tenant_id)
     
-    payment_sums = db.execute(
-        select(Party.party_type, func.coalesce(func.sum(Payment.amount), 0))
-        .join(Party, Party.id == Payment.party_id)
-        .where(Party.tenant_id == tenant_id)
-        .group_by(Party.party_type)
-    ).all()
+    if dt_start:
+        inv_sum_stmt = inv_sum_stmt.where(Invoice.created_at >= dt_start)
+        pay_sum_stmt = pay_sum_stmt.where(Payment.payment_date >= dt_start.date())
+    if dt_end:
+        inv_sum_stmt = inv_sum_stmt.where(Invoice.created_at <= dt_end)
+        pay_sum_stmt = pay_sum_stmt.where(Payment.payment_date <= dt_end.date())
+        
+    invoice_sums = db.execute(inv_sum_stmt.group_by(Party.party_type, Invoice.invoice_type)).all()
+    payment_sums = db.execute(pay_sum_stmt.group_by(Party.party_type)).all()
     
     initial_balances = db.execute(
         select(Party.party_type, func.coalesce(func.sum(Party.initial_balance), 0))
@@ -311,17 +328,18 @@ def dashboard_analytics(db: Session, tenant_id: int) -> DashboardAnalyticsOut:
     outstanding_balances = customer_receivables + supplier_payables
 
     # ── Monthly sales/purchases: ONE aggregation query ──
-    monthly_rows = db.execute(
-        select(
-            extract("month", Invoice.created_at).label("month_num"),
-            Invoice.invoice_type,
-            func.coalesce(func.sum(Invoice.total_amount), 0).label("total"),
-        )
-        .where(
-            Invoice.tenant_id == tenant_id,
-        )
-        .group_by(extract("month", Invoice.created_at), Invoice.invoice_type)
-    ).all()
+    monthly_stmt = select(
+        extract("month", Invoice.created_at).label("month_num"),
+        Invoice.invoice_type,
+        func.coalesce(func.sum(Invoice.total_amount), 0).label("total"),
+    ).where(Invoice.tenant_id == tenant_id)
+    
+    if dt_start:
+        monthly_stmt = monthly_stmt.where(Invoice.created_at >= dt_start)
+    if dt_end:
+        monthly_stmt = monthly_stmt.where(Invoice.created_at <= dt_end)
+        
+    monthly_rows = db.execute(monthly_stmt.group_by(extract("month", Invoice.created_at), Invoice.invoice_type)).all()
 
     months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     monthly_sales_dict = {m: {"sales": Decimal("0"), "purchases": Decimal("0")} for m in months}
@@ -342,9 +360,13 @@ def dashboard_analytics(db: Session, tenant_id: int) -> DashboardAnalyticsOut:
     monthly_sales = [MonthlySales(name=k, sales=v["sales"], purchases=v["purchases"]) for k, v in monthly_sales_dict.items()]
 
     # ── Recent transactions: ONE query + bulk payment lookup ──
-    recent_invoices = db.execute(
-        select(Invoice).where(Invoice.tenant_id == tenant_id).order_by(Invoice.created_at.desc()).limit(8)
-    ).scalars().all()
+    recent_stmt = select(Invoice).where(Invoice.tenant_id == tenant_id)
+    if dt_start:
+        recent_stmt = recent_stmt.where(Invoice.created_at >= dt_start)
+    if dt_end:
+        recent_stmt = recent_stmt.where(Invoice.created_at <= dt_end)
+        
+    recent_invoices = db.execute(recent_stmt.order_by(Invoice.created_at.desc()).limit(8)).scalars().all()
 
     recent_ids = [inv.id for inv in recent_invoices]
     paid_map = {}

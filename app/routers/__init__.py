@@ -9,6 +9,7 @@ New code should import directly from ``app.api``.
 """
 
 from app.api import (  # noqa: F401
+    admin,
     auth,
     batches,
     customers,
@@ -23,6 +24,7 @@ from app.api import (  # noqa: F401
 )
 
 __all__ = [
+    "admin",
     "auth",
     "batches",
     "customers",

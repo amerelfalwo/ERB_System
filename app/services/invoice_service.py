@@ -643,6 +643,28 @@ def process_return_svc(
 
         return_invoice.total_amount = total_return
 
+        # ── Auto-create a negative payment to offset the return value ────────
+        # This ensures the party balance is correctly reduced when a return is
+        # processed: if the customer/supplier already paid, the return cancels
+        # the corresponding portion of that payment so the net balance stays accurate.
+        total_paid_on_party = invoice_repo._db.execute(
+            select(func.coalesce(func.sum(Payment.amount), Decimal("0"))).where(
+                Payment.party_id == orig_invoice.party_id
+            )
+        ).scalar_one()
+        total_paid_on_party = Decimal(str(total_paid_on_party))
+
+        if total_paid_on_party > Decimal("0"):
+            # Negative payment capped at what was actually paid
+            offset_amount = min(total_return, total_paid_on_party)
+            negative_payment = Payment(
+                party_id=orig_invoice.party_id,
+                invoice_id=return_invoice.id,
+                amount=-offset_amount,
+            )
+            invoice_repo.add(negative_payment)
+        # ─────────────────────────────────────────────────────────────────────
+
         invoice_repo.commit()
     except Exception:
         invoice_repo.rollback()

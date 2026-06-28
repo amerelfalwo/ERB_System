@@ -1,5 +1,6 @@
 import enum
 from datetime import datetime, timezone
+from sqlalchemy import func
 
 from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text
 from sqlalchemy.orm import relationship
@@ -26,7 +27,11 @@ class Tenant(Base):
     phone = Column(String, nullable=True, index=True)
     address = Column(Text, nullable=True)
     tax_number = Column(String, nullable=True)
+    store_name = Column(String, nullable=True)
+    print_notes = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True)
+    is_approved = Column(Boolean, default=False, server_default="false", index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), server_default=func.now())
     users = relationship("User", back_populates="tenant", cascade="all, delete-orphan", passive_deletes=True)
     products = relationship("Product", back_populates="tenant", cascade="all, delete-orphan", passive_deletes=True)
     parties = relationship("Party", back_populates="tenant", cascade="all, delete-orphan", passive_deletes=True)

@@ -11,6 +11,7 @@ from .core.deps import get_current_user
 from .core.exceptions import register_exception_handlers
 from .models import Base
 from .api import (
+    admin,
     auth,
     batches,
     customers,
@@ -75,7 +76,14 @@ async def lifespan(app: FastAPI):
             "UPDATE stock_batches SET tenant_id = 1 WHERE tenant_id IS NULL;",
             "UPDATE products SET tenant_id = 1 WHERE tenant_id IS NULL;",
             "UPDATE parties SET tenant_id = 1 WHERE tenant_id IS NULL;",
-            "UPDATE invoices SET tenant_id = 1 WHERE tenant_id IS NULL;"
+            "UPDATE invoices SET tenant_id = 1 WHERE tenant_id IS NULL;",
+            # Admin panel columns
+            "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS is_approved BOOLEAN DEFAULT false;",
+            "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT now();",
+            "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS store_name VARCHAR;",
+            "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS print_notes TEXT;",
+            # Approve existing tenants by default
+            "UPDATE tenants SET is_approved = true WHERE is_approved IS NULL OR is_approved = false;",
         ]
 
         log_dir = BASE_DIR / "logs"
@@ -160,3 +168,4 @@ app.include_router(payments, **_protected)
 app.include_router(templates, **_protected)
 app.include_router(reports, **_protected)
 app.include_router(tenants, **_protected)
+app.include_router(admin, **_protected)
