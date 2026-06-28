@@ -164,13 +164,18 @@ async def upload_tenant_logo(
         raise HTTPException(status_code=404, detail="Tenant not found")
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Invalid file type")
-    LOGOS_DIR.mkdir(parents=True, exist_ok=True)
-    suffix = Path(file.filename or "").suffix.lower() or ".png"
-    filename = f"tenant_{tenant.id}_{uuid4().hex}{suffix}"
-    file_path = LOGOS_DIR / filename
+    
     content = await file.read()
-    file_path.write_bytes(content)
-    logo_url = f"/static/logos/{filename}"
+    
+    # Limit file size to 2MB to prevent database bloat
+    if len(content) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large. Maximum size is 2MB.")
+        
+    import base64
+    base64_encoded = base64.b64encode(content).decode('utf-8')
+    mime_type = file.content_type
+    logo_url = f"data:{mime_type};base64,{base64_encoded}"
+    
     tenant.logo_url = logo_url
     db.commit()
     db.refresh(tenant)

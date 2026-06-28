@@ -82,6 +82,7 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT now();",
             "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS store_name VARCHAR;",
             "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS print_notes TEXT;",
+            "ALTER TABLE tenants ALTER COLUMN logo_url TYPE TEXT;",
             # Approve existing tenants by default
             "UPDATE tenants SET is_approved = true WHERE is_approved IS NULL OR is_approved = false;",
         ]

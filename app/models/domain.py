@@ -21,7 +21,7 @@ class Tenant(Base):
     __tablename__ = "tenants"
     id = Column(Integer, primary_key=True, index=True)
     company_name = Column(String, nullable=False, index=True)
-    logo_url = Column(String)
+    logo_url = Column(Text)
     primary_color = Column(String)
     default_footer_text = Column(Text, nullable=True)
     phone = Column(String, nullable=True, index=True)
