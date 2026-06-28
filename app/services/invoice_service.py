@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 from typing import List, Tuple
 
@@ -15,6 +16,8 @@ from app.core.constants import (
 from app.models.domain import Invoice, InvoiceItem, InvoiceType, Payment, Product, StockBatch
 from app.repositories.base import BatchRepository, InvoiceRepository, PartyRepository
 from app.schemas.invoice import InvoiceCreatePurchase, InvoiceCreateSell
+
+logger = logging.getLogger(__name__)
 
 
 def _invoice_status(paid: Decimal, total: Decimal) -> str:
@@ -139,6 +142,9 @@ def create_purchase_invoice_svc(
     data: InvoiceCreatePurchase, tenant_id: int
 ) -> Invoice:
     try:
+        logger.info("Creating purchase invoice for party_id=%s, tenant_id=%s, items=%d",
+                    data.party_id, tenant_id, len(data.items))
+
         invoice = Invoice(
             party_id=data.party_id,
             invoice_type=INVOICE_TYPE_PURCHASE,
@@ -151,6 +157,7 @@ def create_purchase_invoice_svc(
         invoice_repo.flush()
 
         total = Decimal("0")
+        batches_created = []
         for item in data.items:
             selling_price = item.selling_price
             purchase_price = item.purchase_price
@@ -194,6 +201,9 @@ def create_purchase_invoice_svc(
             )
             batch_repo.add(batch)
             batch_repo.flush()
+            batches_created.append(batch.id)
+            logger.info("  Created batch id=%s for product_id=%s, qty=%s, purchase=%s, sell=%s",
+                        batch.id, item.product_id, item.quantity, purchase_price, selling_price)
 
             invoice_item = InvoiceItem(
                 invoice_id=invoice.id,
@@ -220,8 +230,14 @@ def create_purchase_invoice_svc(
 
         invoice_repo.commit()
         invoice_repo.refresh(invoice)
+        logger.info("Purchase invoice #%s created successfully. Batches: %s. Total: %s",
+                    invoice.id, batches_created, invoice.total_amount)
         return invoice
-    except Exception:
+    except HTTPException:
+        invoice_repo.rollback()
+        raise
+    except Exception as exc:
+        logger.error("PURCHASE INVOICE CREATION FAILED: %s", exc, exc_info=True)
         invoice_repo.rollback()
         raise
 
@@ -301,6 +317,8 @@ def update_invoice_svc(
 
         new_items = data.get("items")
         if new_items is not None:
+            if len(new_items) == 0:
+                raise HTTPException(status_code=400, detail="لا يمكن ترك الفاتورة بدون أي بنود")
             items_updated = True
             if invoice.invoice_type == INVOICE_TYPE_SELL:
                 for old_item in invoice.items:

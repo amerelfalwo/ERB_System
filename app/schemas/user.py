@@ -32,6 +32,11 @@ class TenantInfo(BaseModel):
     logo_url: Optional[str] = None
     primary_color: Optional[str] = None
     default_footer_text: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    tax_number: Optional[str] = None
+    print_notes: Optional[str] = None
+    store_name: Optional[str] = None
 
     class Config:
         from_attributes = True

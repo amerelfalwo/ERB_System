@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,8 +10,8 @@ from app.core.constants import (
     ERR_INVOICE_NOT_FOUND, ERR_PARTY_NOT_FOUND, ERR_PRODUCT_NOT_FOUND,
     INVOICE_TYPE_SELL, INVOICE_TYPE_PURCHASE,
 )
-from app.models.domain import User, InvoiceItem
-from sqlalchemy import select, func
+from app.models.domain import Invoice, User, InvoiceItem, StockBatch, Product
+from sqlalchemy import select, func, and_
 from app.repositories.base import (
     BatchRepository, InvoiceRepository, PartyRepository, ProductRepository, PaymentRepository
 )
@@ -20,6 +21,8 @@ from app.services.invoice_service import (
     update_invoice_svc, delete_invoice_svc, process_return_svc,
     get_invoice_totals_svc, get_party_previous_balance_svc,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
@@ -266,3 +269,133 @@ def process_return(
 
     return_invoice = process_return_svc(inv_repo, batch_repo, orig_invoice, data, current_user.tenant_id)
     return _invoice_out(return_invoice, inv_repo, party_repo)
+
+
+@router.get("/admin/diagnose-stock")
+def diagnose_stock(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Find purchase invoices that might have failed to create stock batches.
+    Returns the list of invoice IDs and item details.
+    """
+    logger.info("Running stock diagnostic for tenant_id=%s", current_user.tenant_id)
+    
+    # Get all purchase invoices
+    invoices = db.execute(
+        select(Invoice)
+        .where(Invoice.tenant_id == current_user.tenant_id)
+        .where(Invoice.invoice_type == INVOICE_TYPE_PURCHASE)
+    ).scalars().all()
+    
+    problematic = []
+    for inv in invoices:
+        items = db.execute(
+            select(InvoiceItem)
+            .where(InvoiceItem.invoice_id == inv.id)
+        ).scalars().all()
+        
+        bad_items = []
+        for item in items:
+            if not item.batch_id:
+                bad_items.append({"item_id": item.id, "product_id": item.product_id, "reason": "No batch_id"})
+                continue
+                
+            batch = db.execute(
+                select(StockBatch)
+                .where(StockBatch.id == item.batch_id)
+            ).scalar_one_or_none()
+            
+            if not batch:
+                bad_items.append({"item_id": item.id, "product_id": item.product_id, "batch_id": item.batch_id, "reason": "Batch not found"})
+                
+        if bad_items:
+            problematic.append({
+                "invoice_id": inv.id,
+                "party_id": inv.party_id,
+                "date": inv.created_at.isoformat(),
+                "bad_items": bad_items
+            })
+            
+    return {"status": "ok", "problematic_invoices_count": len(problematic), "problematic_invoices": problematic}
+
+
+@router.post("/admin/reconcile-stock")
+def reconcile_stock(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Reconcile stock for purchase invoices that don't have associated stock batches.
+    This creates the missing batches.
+    """
+    logger.info("Running stock reconciliation for tenant_id=%s", current_user.tenant_id)
+    
+    # 1. Find all InvoiceItems for purchase invoices that don't have a valid StockBatch
+    # First, get all purchase invoices
+    purchase_invoices = db.execute(
+        select(Invoice.id)
+        .where(Invoice.tenant_id == current_user.tenant_id)
+        .where(Invoice.invoice_type == INVOICE_TYPE_PURCHASE)
+    ).scalars().all()
+    
+    if not purchase_invoices:
+        return {"status": "ok", "fixed_count": 0, "message": "No purchase invoices found"}
+        
+    # Get all items for these invoices
+    items = db.execute(
+        select(InvoiceItem)
+        .where(InvoiceItem.invoice_id.in_(purchase_invoices))
+    ).scalars().all()
+    
+    fixed_count = 0
+    errors = []
+    
+    for item in items:
+        # Check if batch exists
+        batch_exists = False
+        if item.batch_id:
+            batch = db.execute(select(StockBatch).where(StockBatch.id == item.batch_id)).scalar_one_or_none()
+            batch_exists = batch is not None
+            
+        if not batch_exists:
+            try:
+                # We need to recreate the batch
+                invoice = db.execute(select(Invoice).where(Invoice.id == item.invoice_id)).scalar_one()
+                product = db.execute(select(Product).where(Product.id == item.product_id)).scalar_one()
+                
+                # Use existing prices from item if available, otherwise from product
+                purchase_price = item.purchase_price or item.unit_price or product.purchase_price or Decimal("0")
+                sell_price = item.sell_price or product.sell_price or Decimal("0")
+                
+                batch = StockBatch(
+                    product_id=item.product_id,
+                    purchase_price=purchase_price,
+                    current_selling_price=sell_price,
+                    initial_quantity=item.quantity,
+                    remaining_quantity=item.quantity,
+                    tenant_id=current_user.tenant_id,
+                    party_id=invoice.party_id,
+                )
+                db.add(batch)
+                db.flush() # flush to get ID
+                
+                # Update item to point to the new batch
+                item.batch_id = batch.id
+                db.add(item)
+                
+                fixed_count += 1
+                logger.info(f"Reconciled missing batch for item_id={item.id}, product_id={item.product_id}, new_batch_id={batch.id}")
+            except Exception as e:
+                logger.error(f"Failed to reconcile item {item.id}: {e}")
+                errors.append(f"Failed to fix item {item.id}: {str(e)}")
+                
+    if fixed_count > 0:
+        db.commit()
+        
+    return {
+        "status": "success", 
+        "fixed_items_count": fixed_count,
+        "errors": errors
+    }

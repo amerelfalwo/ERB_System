@@ -28,7 +28,7 @@ InvoiceItemCreateSale = InvoiceItemCreateSell
 
 class InvoiceCreatePurchase(BaseModel):
     party_id: int
-    items: List[InvoiceItemCreatePurchase]
+    items: List[InvoiceItemCreatePurchase] = Field(..., min_length=1)
     amount_paid: Decimal = Field(Decimal('0'), ge=0)
     delivery_fee: Decimal = Field(Decimal('0'), ge=0)
     footer_custom_text: Optional[str] = None
@@ -36,7 +36,7 @@ class InvoiceCreatePurchase(BaseModel):
 
 class InvoiceCreateSell(BaseModel):
     party_id: int
-    items: List[InvoiceItemCreateSell]
+    items: List[InvoiceItemCreateSell] = Field(..., min_length=1)
     amount_paid: Decimal = Field(Decimal('0'), ge=0)
     delivery_fee: Decimal = Field(Decimal('0'), ge=0)
     footer_custom_text: Optional[str] = None
