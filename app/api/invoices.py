@@ -351,6 +351,7 @@ def reconcile_stock(
     
     fixed_count = 0
     errors = []
+    products_to_update = set()
     
     for item in items:
         # Check if batch exists
@@ -386,11 +387,22 @@ def reconcile_stock(
                 db.add(item)
                 
                 fixed_count += 1
+                products_to_update.add(item.product_id)
                 logger.info(f"Reconciled missing batch for item_id={item.id}, product_id={item.product_id}, new_batch_id={batch.id}")
             except Exception as e:
                 logger.error(f"Failed to reconcile item {item.id}: {e}")
                 errors.append(f"Failed to fix item {item.id}: {str(e)}")
                 
+    if products_to_update:
+        for product_id in products_to_update:
+            total_stock = db.execute(
+                select(func.sum(StockBatch.remaining_quantity))
+                .where(StockBatch.product_id == product_id)
+            ).scalar() or Decimal("0")
+            product = db.execute(select(Product).where(Product.id == product_id)).scalar_one()
+            product.total_stock = total_stock
+            db.add(product)
+
     if fixed_count > 0:
         db.commit()
         
