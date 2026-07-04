@@ -61,6 +61,8 @@ class PartyOut(PartyBase):
     party_type: PartyType
     initial_balance: Optional[Decimal] = Decimal("0")
     calculated_balance: Optional[Decimal] = Decimal("0")
+    total_profit: Optional[Decimal] = Decimal("0")
+    payment_status: Optional[str] = None
     notes: Optional[str] = None
     credit_limit: Optional[Decimal] = Decimal("0")
 

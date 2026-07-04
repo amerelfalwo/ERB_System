@@ -310,6 +310,20 @@ def party_summary(
 
     balance = initial + total_purchases - total_returns - total_paid
 
+    item_ids = []
+    for inv in invoices:
+        for item in inv.items:
+            item_ids.append(item.id)
+            
+    returned_qty_map = {}
+    if item_ids:
+        rows = db.execute(
+            select(InvoiceItem.original_invoice_item_id, func.sum(InvoiceItem.quantity))
+            .where(InvoiceItem.original_invoice_item_id.in_(item_ids))
+            .group_by(InvoiceItem.original_invoice_item_id)
+        ).all()
+        returned_qty_map = {orig_id: qty for orig_id, qty in rows if orig_id}
+
     invoice_list = []
     for inv in invoices:
         inv_paid = payments_by_invoice.get(inv.id, Decimal("0"))
@@ -324,11 +338,14 @@ def party_summary(
         inv_profit = Decimal("0")
         if inv.invoice_type == InvoiceType.SELL:
             for item in inv.items:
-                cost = item.purchase_price if item.purchase_price is not None else (
-                    item.batch.purchase_price if item.batch else Decimal("0")
+                cost = item.batch.purchase_price if item.batch and item.batch.purchase_price is not None else (
+                    item.purchase_price if item.purchase_price is not None else Decimal("0")
                 )
                 sale = item.sell_price if item.sell_price is not None else item.unit_price
-                inv_profit += (sale - cost) * item.quantity
+                qty = item.quantity if item.quantity is not None else Decimal("0")
+                returned_qty = returned_qty_map.get(item.id, Decimal("0"))
+                effective_qty = max(Decimal("0"), qty - returned_qty)
+                inv_profit += (sale - cost) * effective_qty
 
         invoice_list.append({
             "id": inv.id,

@@ -256,6 +256,7 @@ def supplier_summary(
             "total_amount": float(total_amt),
             "paid_amount": float(inv_paid),
             "balance": float(inv_balance),
+            "delivery_fee": float(inv.delivery_fee or 0),
             "status": status,
             "invoice_profit": float(inv_profit),
             "created_at": inv.created_at.isoformat() if inv.created_at else None,

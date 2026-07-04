@@ -69,6 +69,7 @@ class Product(Base):
     name = Column(String, index=True)
     last_purchase_price = Column(Numeric(12, 2), default=0)
     purchase_price = Column(Numeric(12, 2), default=0)
+    average_cost = Column(Numeric(12, 2), default=0)
     sell_price = Column(Numeric(12, 2), default=0)
     tenant = relationship("Tenant", back_populates="products")
     batches = relationship("StockBatch", back_populates="product", passive_deletes=True)

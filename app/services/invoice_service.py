@@ -35,7 +35,7 @@ def _build_invoice_dict(inv: Invoice, paid: Decimal, party_name_map: dict = None
     if inv.invoice_type == INVOICE_TYPE_SELL:
         for item in inv.items:
             cost = item.purchase_price if item.purchase_price is not None else (
-                item.batch.purchase_price if item.batch else Decimal("0")
+                item.batch.purchase_price if item.batch and item.batch.purchase_price is not None else Decimal("0")
             )
             sell = item.sell_price if item.sell_price is not None else item.unit_price
             profit += (sell - cost) * item.quantity
@@ -162,14 +162,14 @@ def create_purchase_invoice_svc(
             selling_price = item.selling_price
             purchase_price = item.purchase_price
             
-            product = db.execute(select(Product).where(Product.id == item.product_id)).scalar_one()
+            product = db.execute(select(Product).where(Product.id == item.product_id, Product.tenant_id == tenant_id)).scalar_one()
             
             if not selling_price or selling_price <= 0:
                 if product.sell_price and product.sell_price > 0:
                     selling_price = product.sell_price
                 else:
                     prev_batch_sell = db.execute(
-                        select(StockBatch).where(StockBatch.product_id == item.product_id, StockBatch.current_selling_price > 0).order_by(StockBatch.id.desc()).limit(1)
+                        select(StockBatch).where(StockBatch.product_id == item.product_id, StockBatch.tenant_id == tenant_id, StockBatch.current_selling_price > 0).order_by(StockBatch.id.desc()).limit(1)
                     ).scalar_one_or_none()
                     if prev_batch_sell:
                         selling_price = prev_batch_sell.current_selling_price
@@ -182,13 +182,23 @@ def create_purchase_invoice_svc(
                     purchase_price = product.purchase_price
                 else:
                     prev_batch_purch = db.execute(
-                        select(StockBatch).where(StockBatch.product_id == item.product_id, StockBatch.purchase_price > 0).order_by(StockBatch.id.desc()).limit(1)
+                        select(StockBatch).where(StockBatch.product_id == item.product_id, StockBatch.tenant_id == tenant_id, StockBatch.purchase_price > 0).order_by(StockBatch.id.desc()).limit(1)
                     ).scalar_one_or_none()
                     if prev_batch_purch:
                         purchase_price = prev_batch_purch.purchase_price
                         
             if not purchase_price or purchase_price <= 0:
                 raise HTTPException(status_code=400, detail=f"سعر الشراء غير محدد أو صفر للمنتج ID {item.product_id}. يرجى إدخال سعر شراء صحيح.")
+
+            total_stock = batch_repo.get_total_stock(item.product_id)
+            new_stock = Decimal(str(item.quantity))
+            current_avg = product.average_cost if product.average_cost else Decimal("0")
+            new_cost = purchase_price
+            
+            if total_stock + new_stock > 0:
+                updated_average_cost = ((total_stock * current_avg) + (new_stock * new_cost)) / (total_stock + new_stock)
+            else:
+                updated_average_cost = new_cost
 
             batch = StockBatch(
                 product_id=item.product_id,
@@ -218,6 +228,7 @@ def create_purchase_invoice_svc(
 
             product.last_purchase_price = purchase_price
             product.purchase_price = purchase_price
+            product.average_cost = updated_average_cost
             invoice_repo.add(product)
 
         invoice.total_amount = total + data.delivery_fee
@@ -269,8 +280,7 @@ def create_sell_invoice_svc(
             allocations = allocate_batches_svc(batch_repo, item.product_id, item.quantity)
             for batch, qty in allocations:
                 batch.remaining_quantity = batch.remaining_quantity - qty
-                override_cost = Decimal(str(item.purchase_price)) if item.purchase_price is not None else None
-                locked_cost = override_cost if override_cost is not None else batch.purchase_price
+                locked_cost = batch.purchase_price
                 invoice_item = InvoiceItem(
                     invoice_id=invoice.id,
                     batch_id=batch.id,
@@ -368,7 +378,7 @@ def update_invoice_svc(
                     old_item = old_map.get(batch_id)
                     if not old_item:
                         raise HTTPException(status_code=400, detail=f"البند (دفعة #{batch_id}) غير موجود في الفاتورة")
-                    batch = db.execute(select(StockBatch).where(StockBatch.id == int(batch_id))).scalar_one_or_none()
+                    batch = db.execute(select(StockBatch).where(StockBatch.id == int(batch_id), StockBatch.tenant_id == tenant_id)).scalar_one_or_none()
                     if not batch:
                         raise HTTPException(status_code=404, detail=f"الدفعة #{batch_id} غير موجودة")
                     sold_qty = batch.initial_quantity - batch.remaining_quantity

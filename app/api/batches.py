@@ -28,7 +28,7 @@ def list_batches_by_product(
             "id": b.id,
             "product_id": b.product_id,
             "purchase_price": b.purchase_price,
-            "selling_price": b.current_selling_price,
+            "current_selling_price": b.current_selling_price,
             "initial_quantity": b.initial_quantity,
             "remaining_quantity": b.remaining_quantity,
             "created_at": b.created_at,

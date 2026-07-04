@@ -172,6 +172,15 @@ class BatchRepository:
             ).scalar_one_or_none()
         return price
 
+    def get_total_stock(self, product_id: int) -> Decimal:
+        total = self._db.execute(
+            select(func.sum(StockBatch.remaining_quantity)).where(
+                StockBatch.product_id == product_id,
+                StockBatch.tenant_id == self._tid,
+            )
+        ).scalar_one_or_none()
+        return Decimal(str(total)) if total is not None else Decimal("0")
+
     def add(self, batch: StockBatch) -> None:
         self._db.add(batch)
 

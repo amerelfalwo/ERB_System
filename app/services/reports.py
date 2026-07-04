@@ -60,7 +60,7 @@ def profit_report(db: Session, tenant_id: int = None, start_date: str = None, en
 
     items: List[ProfitItem] = []
     for invoice_item, batch, invoice in rows:
-        cost = Decimal(str(invoice_item.purchase_price if invoice_item.purchase_price is not None else batch.purchase_price))
+        cost = Decimal(str(invoice_item.purchase_price if invoice_item.purchase_price is not None else (batch.purchase_price if batch and batch.purchase_price is not None else "0")))
         sale = Decimal(str(invoice_item.sell_price if invoice_item.sell_price is not None else invoice_item.unit_price))
         qty_val = Decimal(str(invoice_item.quantity))
         
@@ -127,7 +127,7 @@ def party_profit_summary(db: Session, tenant_id: int) -> list:
 
     for invoice_item, batch, inv_id in item_rows:
         party_id, party_name, inv_type, _ = invoice_meta[inv_id]
-        cost = Decimal(str(invoice_item.purchase_price if invoice_item.purchase_price is not None else batch.purchase_price))
+        cost = Decimal(str(invoice_item.purchase_price if invoice_item.purchase_price is not None else (batch.purchase_price if batch and batch.purchase_price is not None else "0")))
         sale = Decimal(str(invoice_item.sell_price if invoice_item.sell_price is not None else invoice_item.unit_price))
         qty = Decimal(str(invoice_item.quantity))
         

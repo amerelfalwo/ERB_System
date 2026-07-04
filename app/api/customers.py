@@ -50,8 +50,48 @@ def list_customers(
     if parties:
         party_ids = [p.id for p in parties]
         balances = get_parties_balances(db, party_ids, current_user.tenant_id)
+
+        sell_invoices = db.execute(
+            select(Invoice).options(
+                selectinload(Invoice.items).joinedload(InvoiceItem.batch)
+            ).where(
+                Invoice.party_id.in_(party_ids),
+                Invoice.invoice_type == InvoiceType.SELL,
+                Invoice.tenant_id == current_user.tenant_id
+            )
+        ).scalars().unique().all()
+        
+        item_ids = [item.id for inv in sell_invoices for item in inv.items]
+        returned_qty_map = {}
+        if item_ids:
+            rows = db.execute(
+                select(InvoiceItem.original_invoice_item_id, func.sum(InvoiceItem.quantity))
+                .where(InvoiceItem.original_invoice_item_id.in_(item_ids))
+                .group_by(InvoiceItem.original_invoice_item_id)
+            ).all()
+            returned_qty_map = {orig_id: qty for orig_id, qty in rows if orig_id}
+
+        profits_map = {p.id: Decimal("0") for p in parties}
+        for inv in sell_invoices:
+            inv_profit = Decimal("0")
+            for item in inv.items:
+                cost = item.batch.purchase_price if item.batch and item.batch.purchase_price is not None else (
+                    item.purchase_price if item.purchase_price is not None else Decimal("0")
+                )
+                sale = item.sell_price if item.sell_price is not None else (item.unit_price if item.unit_price is not None else Decimal("0"))
+                qty = item.quantity if item.quantity is not None else Decimal("0")
+                returned_qty = returned_qty_map.get(item.id, Decimal("0"))
+                effective_qty = max(Decimal("0"), qty - returned_qty)
+                inv_profit += (sale - cost) * effective_qty
+            profits_map[inv.party_id] += inv_profit
+
         for p in parties:
             p.calculated_balance = balances.get(p.id, Decimal("0"))
+            p.total_profit = profits_map.get(p.id, Decimal("0"))
+            if p.calculated_balance <= 0:
+                p.payment_status = "paid"
+            else:
+                p.payment_status = "unpaid"
     return parties
 
 
@@ -251,12 +291,14 @@ def customer_summary(
         inv_profit = Decimal("0")
         if inv.invoice_type == InvoiceType.SELL:
             for item in inv.items:
-                cost = item.purchase_price if item.purchase_price is not None else (
-                    item.batch.purchase_price if item.batch and item.batch.purchase_price is not None else Decimal("0")
+                cost = item.batch.purchase_price if item.batch and item.batch.purchase_price is not None else (
+                    item.purchase_price if item.purchase_price is not None else Decimal("0")
                 )
                 sale = item.sell_price if item.sell_price is not None else (item.unit_price if item.unit_price is not None else Decimal("0"))
                 qty = item.quantity if item.quantity is not None else Decimal("0")
-                inv_profit += (sale - cost) * qty
+                returned_qty = returned_qty_map.get(item.id, Decimal("0"))
+                effective_qty = max(Decimal("0"), qty - returned_qty)
+                inv_profit += (sale - cost) * effective_qty
 
         invoice_list.append({
             "id": inv.id,
@@ -264,6 +306,7 @@ def customer_summary(
             "total_amount": float(total_amt),
             "paid_amount": float(inv_paid),
             "balance": float(inv_balance),
+            "delivery_fee": float(inv.delivery_fee or 0),
             "status": status,
             "invoice_profit": float(inv_profit),
             "created_at": inv.created_at.isoformat() if inv.created_at else None,
