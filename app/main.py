@@ -46,6 +46,9 @@ async def lifespan(app: FastAPI):
 
         migrations = [
             "ALTER TABLE invoices ALTER COLUMN invoice_type TYPE VARCHAR(30);",
+            "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS subtotal NUMERIC(12, 2) DEFAULT 0;",
+            "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS total_discount NUMERIC(12, 2) DEFAULT 0;",
+            "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS total_tax NUMERIC(12, 2) DEFAULT 0;",
             "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS delivery_fee NUMERIC(10, 2);",
             "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS footer_custom_text TEXT;",
             "ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS purchase_price NUMERIC(10, 2);",
@@ -100,10 +103,11 @@ async def lifespan(app: FastAPI):
         with open(log_file_path, "w") as log_file:
             log_file.write("Starting migrations via pooler connection...\n")
             try:
-                with engine.begin() as conn:
+                with engine.connect() as conn:
                     for migration in migrations:
                         try:
-                            conn.execute(text(migration))
+                            with conn.begin():
+                                conn.execute(text(migration))
                             log_file.write(f"SUCCESS: {migration}\n")
                         except Exception as e:
                             # Log but don't abort — most are idempotent IF NOT EXISTS

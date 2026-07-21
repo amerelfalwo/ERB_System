@@ -54,6 +54,8 @@ def _invoice_out(invoice, invoice_repo: InvoiceRepository, party_repo: PartyRepo
             sell_price=item.sell_price,
             product_name=product_name,
             already_returned_qty=already_returned_qty,
+            discount=getattr(item, "discount", Decimal("0")) or Decimal("0"),
+            tax=getattr(item, "tax", Decimal("0")) or Decimal("0"),
             original_invoice_item_id=item.original_invoice_item_id,
         ))
 
@@ -66,7 +68,14 @@ def _invoice_out(invoice, invoice_repo: InvoiceRepository, party_repo: PartyRepo
         party_name=party_name,
         invoice_type=invoice.invoice_type,
         total_amount=invoice.total_amount,
+        subtotal=getattr(invoice, "subtotal", Decimal("0")) or Decimal("0"),
+        total_discount=getattr(invoice, "total_discount", Decimal("0")) or Decimal("0"),
+        total_tax=getattr(invoice, "total_tax", Decimal("0")) or Decimal("0"),
         delivery_fee=invoice.delivery_fee or Decimal("0"),
+        reference_number=invoice.reference_number,
+        issue_date=invoice.issue_date or invoice.created_at,
+        due_date=invoice.due_date,
+        notes=invoice.notes,
         footer_custom_text=invoice.footer_custom_text,
         created_at=invoice.created_at,
         items=items_out,

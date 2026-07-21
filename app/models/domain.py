@@ -103,7 +103,14 @@ class Invoice(Base):
     party_id = Column(Integer, ForeignKey("parties.id", ondelete="RESTRICT"), index=True)
     invoice_type = Column(Enum(InvoiceType, native_enum=False), index=True)
     total_amount = Column(Numeric(12, 2))
+    subtotal = Column(Numeric(12, 2), default=0)
+    total_discount = Column(Numeric(12, 2), default=0)
+    total_tax = Column(Numeric(12, 2), default=0)
     delivery_fee = Column(Numeric(12, 2), default=0)
+    reference_number = Column(String, nullable=True, index=True)
+    issue_date = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    due_date = Column(DateTime, nullable=True, index=True)
+    notes = Column(Text, nullable=True)
     footer_custom_text = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     tenant = relationship("Tenant", back_populates="invoices")
@@ -121,6 +128,8 @@ class InvoiceItem(Base):
     unit_price = Column(Numeric(12, 2))  # Keep for backwards compat or as general price
     purchase_price = Column(Numeric(12, 2), nullable=True)
     sell_price = Column(Numeric(12, 2), nullable=True)
+    discount = Column(Numeric(12, 2), default=0)
+    tax = Column(Numeric(12, 2), default=0)
     invoice = relationship("Invoice", back_populates="items")
     batch = relationship("StockBatch")
 

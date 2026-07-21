@@ -1,6 +1,7 @@
 import logging
 from decimal import Decimal
 from typing import List, Tuple
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -47,6 +48,10 @@ def _build_invoice_dict(inv: Invoice, paid: Decimal, party_name_map: dict = None
         "invoice_type": inv.invoice_type.value if inv.invoice_type else None,
         "total_amount": inv.total_amount,
         "delivery_fee": inv.delivery_fee if inv.delivery_fee else Decimal("0"),
+        "reference_number": inv.reference_number,
+        "issue_date": inv.issue_date.isoformat() if inv.issue_date else None,
+        "due_date": inv.due_date.isoformat() if inv.due_date else None,
+        "notes": inv.notes,
         "footer_custom_text": inv.footer_custom_text,
         "paid_amount": paid,
         "balance": balance,
@@ -150,16 +155,22 @@ def create_purchase_invoice_svc(
             invoice_type=INVOICE_TYPE_PURCHASE,
             total_amount=Decimal("0"),
             delivery_fee=data.delivery_fee,
+            reference_number=data.reference_number,
+            issue_date=data.issue_date or datetime.now(timezone.utc),
+            due_date=data.due_date,
+            notes=data.notes,
             footer_custom_text=data.footer_custom_text,
             tenant_id=tenant_id,
         )
         invoice_repo.add(invoice)
         invoice_repo.flush()
 
-        total = Decimal("0")
+        subtotal = Decimal("0")
+        total_item_discount = Decimal("0")
+        total_item_tax = Decimal("0")
         batches_created = []
         for item in data.items:
-            selling_price = item.selling_price
+            selling_price = item.sell_price
             purchase_price = item.purchase_price
             
             product = db.execute(select(Product).where(Product.id == item.product_id, Product.tenant_id == tenant_id)).scalar_one()
@@ -215,6 +226,9 @@ def create_purchase_invoice_svc(
             logger.info("  Created batch id=%s for product_id=%s, qty=%s, purchase=%s, sell=%s",
                         batch.id, item.product_id, item.quantity, purchase_price, selling_price)
 
+            discount = item.discount or Decimal("0")
+            tax = item.tax or Decimal("0")
+
             invoice_item = InvoiceItem(
                 invoice_id=invoice.id,
                 batch_id=batch.id,
@@ -222,16 +236,25 @@ def create_purchase_invoice_svc(
                 unit_price=purchase_price,
                 purchase_price=purchase_price,
                 sell_price=selling_price,
+                discount=discount,
+                tax=tax,
             )
             invoice_repo.add(invoice_item)
-            total += purchase_price * item.quantity
+            subtotal += purchase_price * item.quantity
+            total_item_discount += discount
+            total_item_tax += tax
 
             product.last_purchase_price = purchase_price
             product.purchase_price = purchase_price
             product.average_cost = updated_average_cost
             invoice_repo.add(product)
 
-        invoice.total_amount = total + data.delivery_fee
+        invoice.total_discount = (data.total_discount or Decimal("0")) + total_item_discount
+        invoice.total_tax = (data.total_tax or Decimal("0")) + total_item_tax
+        invoice.subtotal = subtotal
+        invoice.total_amount = invoice.subtotal - invoice.total_discount + invoice.total_tax + data.delivery_fee
+        if invoice.total_amount < 0:
+            raise HTTPException(status_code=400, detail="إجمالي الفاتورة لا يمكن أن يكون أقل من الصفر")
         # ── Rule: cannot pay more than the invoice total ──
         max_payable = invoice.total_amount
         capped_payment = min(Decimal(str(data.amount_paid)), max_payable)
@@ -263,13 +286,20 @@ def create_sell_invoice_svc(
             invoice_type=INVOICE_TYPE_SELL,
             total_amount=Decimal("0"),
             delivery_fee=data.delivery_fee,
+            reference_number=data.reference_number,
+            issue_date=data.issue_date or datetime.now(timezone.utc),
+            due_date=data.due_date,
+            notes=data.notes,
             footer_custom_text=data.footer_custom_text,
             tenant_id=tenant_id,
         )
         invoice_repo.add(invoice)
         invoice_repo.flush()
 
-        total = Decimal("0")
+        subtotal = Decimal("0")
+        total_item_discount = Decimal("0")
+        total_item_tax = Decimal("0")
+        
         for item in data.items:
             latest_price = batch_repo.get_highest_selling_price(item.product_id)
             if latest_price is None:
@@ -281,6 +311,12 @@ def create_sell_invoice_svc(
             for batch, qty in allocations:
                 batch.remaining_quantity = batch.remaining_quantity - qty
                 locked_cost = batch.purchase_price
+                
+                # Pro-rate discount and tax based on the quantity allocated
+                fraction = qty / item.quantity if item.quantity > 0 else Decimal("0")
+                discount = (item.discount or Decimal("0")) * fraction
+                tax = (item.tax or Decimal("0")) * fraction
+                
                 invoice_item = InvoiceItem(
                     invoice_id=invoice.id,
                     batch_id=batch.id,
@@ -288,11 +324,20 @@ def create_sell_invoice_svc(
                     unit_price=effective_price,
                     purchase_price=locked_cost,
                     sell_price=effective_price,
+                    discount=discount,
+                    tax=tax,
                 )
                 invoice_repo.add(invoice_item)
-                total += effective_price * qty
+                subtotal += effective_price * qty
+                total_item_discount += discount
+                total_item_tax += tax
 
-        invoice.total_amount = total + data.delivery_fee
+        invoice.total_discount = (data.total_discount or Decimal("0")) + total_item_discount
+        invoice.total_tax = (data.total_tax or Decimal("0")) + total_item_tax
+        invoice.subtotal = subtotal
+        invoice.total_amount = invoice.subtotal - invoice.total_discount + invoice.total_tax + data.delivery_fee
+        if invoice.total_amount < 0:
+            raise HTTPException(status_code=400, detail="إجمالي الفاتورة لا يمكن أن يكون أقل من الصفر")
         # ── Rule: cannot pay more than the invoice total ──
         max_payable = invoice.total_amount
         capped_payment = min(Decimal(str(data.amount_paid)), max_payable)
@@ -330,6 +375,10 @@ def update_invoice_svc(
             if len(new_items) == 0:
                 raise HTTPException(status_code=400, detail="لا يمكن ترك الفاتورة بدون أي بنود")
             items_updated = True
+            
+            old_global_discount = (invoice.total_discount or Decimal("0")) - sum(i.discount or Decimal("0") for i in invoice.items)
+            old_global_tax = (invoice.total_tax or Decimal("0")) - sum(i.tax or Decimal("0") for i in invoice.items)
+            
             if invoice.invoice_type == INVOICE_TYPE_SELL:
                 for old_item in invoice.items:
                     b = batch_repo.get_by_id(old_item.batch_id)
@@ -338,42 +387,77 @@ def update_invoice_svc(
                     invoice_repo.delete(old_item)
                 invoice_repo.flush()
 
-                total = Decimal("0")
+                subtotal = Decimal("0")
+                total_item_discount = Decimal("0")
+                total_item_tax = Decimal("0")
                 for item in new_items:
-                    batch = batch_repo.get_by_id(item["batch_id"])
-                    if not batch:
-                        raise HTTPException(status_code=404, detail=f"Batch {item['batch_id']} not found")
-                    unit_price = Decimal(str(item["unit_price"]))
-                    qty = Decimal(str(item["quantity"]))
+                    product_id = item.get("product_id")
+                    if not product_id:
+                        if "batch_id" in item:
+                            b = batch_repo.get_by_id(item["batch_id"])
+                            if b:
+                                product_id = b.product_id
+                        if not product_id:
+                            raise HTTPException(status_code=400, detail="يجب توفير product_id لكل صنف في الفاتورة")
+                            
+                    quantity = Decimal(str(item.get("quantity", 0)))
+                    sell_price = item.get("sell_price") or item.get("unit_price")
                     
-                    if qty <= 0:
-                        raise HTTPException(status_code=400, detail="الكمية يجب أن تكون أكبر من الصفر")
-                    if unit_price <= 0:
-                        raise HTTPException(status_code=400, detail="سعر البيع يجب أن يكون أكبر من الصفر")
+                    latest_price = batch_repo.get_highest_selling_price(product_id)
+                    if latest_price is None:
+                        raise HTTPException(status_code=400, detail=f"No batches available for product {product_id}")
+                    effective_price = Decimal(str(sell_price)) if sell_price is not None else latest_price
+                    if effective_price <= Decimal("0"):
+                        raise HTTPException(status_code=400, detail=f"سعر البيع غير محدد أو صفر للمنتج ID {product_id}. يرجى إدخال سعر بيع صحيح.")
                         
-                    if batch.remaining_quantity < qty:
-                        raise HTTPException(status_code=400, detail=f"الكمية المطلوبة غير متوفرة في الدفعة #{batch.id}")
-                    batch.remaining_quantity -= qty
-                    new_item = InvoiceItem(
-                        invoice_id=invoice.id, batch_id=batch.id,
-                        quantity=qty, unit_price=unit_price,
-                        purchase_price=batch.purchase_price, sell_price=unit_price,
-                    )
-                    invoice_repo.add(new_item)
-                    total += unit_price * qty
-                new_items_total = total
+                    if quantity <= Decimal("0"):
+                        raise HTTPException(status_code=400, detail="الكمية يجب أن تكون أكبر من الصفر")
+                        
+                    allocations = allocate_batches_svc(batch_repo, product_id, quantity)
+                    for batch, qty in allocations:
+                        batch.remaining_quantity = batch.remaining_quantity - qty
+                        locked_cost = batch.purchase_price
+                        
+                        fraction = qty / quantity if quantity > 0 else Decimal("0")
+                        discount = Decimal(str(item.get("discount", "0"))) * fraction
+                        tax = Decimal(str(item.get("tax", "0"))) * fraction
+                        
+                        invoice_item = InvoiceItem(
+                            invoice_id=invoice.id,
+                            batch_id=batch.id,
+                            quantity=qty,
+                            unit_price=effective_price,
+                            purchase_price=locked_cost,
+                            sell_price=effective_price,
+                            discount=discount,
+                            tax=tax,
+                        )
+                        invoice_repo.add(invoice_item)
+                        subtotal += effective_price * qty
+                        total_item_discount += discount
+                        total_item_tax += tax
+                
+                invoice.subtotal = subtotal
+                new_global_discount = Decimal(str(data["total_discount"])) if "total_discount" in data else old_global_discount
+                new_global_tax = Decimal(str(data["total_tax"])) if "total_tax" in data else old_global_tax
+                invoice.total_discount = new_global_discount + total_item_discount
+                invoice.total_tax = new_global_tax + total_item_tax
 
             elif invoice.invoice_type == INVOICE_TYPE_PURCHASE:
                 old_map = {str(item.batch_id): item for item in invoice.items}
                 if len(new_items) != len(invoice.items):
                     raise HTTPException(status_code=400, detail=ERR_CANNOT_MODIFY_PURCHASE_COUNT)
 
-                total = Decimal("0")
+                subtotal = Decimal("0")
+                total_item_discount = Decimal("0")
+                total_item_tax = Decimal("0")
                 for item_data in new_items:
                     batch_id = str(item_data.get("batch_id"))
                     new_qty = Decimal(str(item_data.get("quantity", 0)))
                     new_price = Decimal(str(item_data.get("unit_price", 0)))
                     new_sell_price = Decimal(str(item_data.get("sell_price", 0)))
+                    discount = Decimal(str(item_data.get("discount", 0)))
+                    tax = Decimal(str(item_data.get("tax", 0)))
                     
                     old_item = old_map.get(batch_id)
                     if not old_item:
@@ -396,6 +480,8 @@ def update_invoice_svc(
                     old_item.quantity = new_qty
                     old_item.unit_price = new_price
                     old_item.purchase_price = new_price
+                    old_item.discount = discount
+                    old_item.tax = tax
                     
                     if new_sell_price > 0:
                         batch.current_selling_price = new_sell_price
@@ -408,8 +494,15 @@ def update_invoice_svc(
                         if new_sell_price > 0:
                             batch.product.sell_price = new_sell_price
                         
-                    total += new_qty * new_price
-                new_items_total = total
+                    subtotal += new_qty * new_price
+                    total_item_discount += discount
+                    total_item_tax += tax
+                
+                invoice.subtotal = subtotal
+                new_global_discount = Decimal(str(data["total_discount"])) if "total_discount" in data else old_global_discount
+                new_global_tax = Decimal(str(data["total_tax"])) if "total_tax" in data else old_global_tax
+                invoice.total_discount = new_global_discount + total_item_discount
+                invoice.total_tax = new_global_tax + total_item_tax
             else:
                 raise HTTPException(status_code=400, detail=ERR_CANNOT_MODIFY_RETURN)
 
@@ -418,21 +511,30 @@ def update_invoice_svc(
             new_fee = Decimal(str(delivery_fee))
             if new_fee < 0:
                 raise HTTPException(status_code=400, detail="رسوم التوصيل لا يمكن أن تكون سالبة")
-            if items_updated:
-                invoice.delivery_fee = new_fee
-                invoice.total_amount = new_items_total + new_fee
-            else:
-                old_fee = invoice.delivery_fee or Decimal("0")
-                invoice.delivery_fee = new_fee
-                invoice.total_amount = (invoice.total_amount or Decimal("0")) - old_fee + new_fee
-        elif items_updated:
-            # Items were updated but delivery fee was not, retain the old delivery fee
-            old_fee = invoice.delivery_fee or Decimal("0")
-            invoice.total_amount = new_items_total + old_fee
+            invoice.delivery_fee = new_fee
+
+        if items_updated or delivery_fee is not None or "total_discount" in data or "total_tax" in data:
+            if "total_discount" in data and not items_updated:
+                invoice.total_discount = Decimal(str(data["total_discount"])) + sum(i.discount or Decimal("0") for i in invoice.items)
+            if "total_tax" in data and not items_updated:
+                invoice.total_tax = Decimal(str(data["total_tax"])) + sum(i.tax or Decimal("0") for i in invoice.items)
+            
+            invoice.total_amount = (invoice.subtotal or Decimal("0")) - (invoice.total_discount or Decimal("0")) + (invoice.total_tax or Decimal("0")) + (invoice.delivery_fee or Decimal("0"))
+            if invoice.total_amount < 0:
+                raise HTTPException(status_code=400, detail="إجمالي الفاتورة لا يمكن أن يكون أقل من الصفر")
 
         footer = data.get("footer_custom_text")
         if footer is not None:
             invoice.footer_custom_text = footer
+            
+        if "reference_number" in data:
+            invoice.reference_number = data.get("reference_number")
+        if "issue_date" in data:
+            invoice.issue_date = data.get("issue_date")
+        if "due_date" in data:
+            invoice.due_date = data.get("due_date")
+        if "notes" in data:
+            invoice.notes = data.get("notes")
 
         invoice_repo.commit()
     except Exception:
@@ -467,6 +569,10 @@ def update_invoice_svc(
         "invoice_type": invoice.invoice_type.value if invoice.invoice_type else None,
         "total_amount": invoice.total_amount,
         "delivery_fee": invoice.delivery_fee if invoice.delivery_fee else Decimal("0"),
+        "reference_number": invoice.reference_number,
+        "issue_date": invoice.issue_date.isoformat() if invoice.issue_date else None,
+        "due_date": invoice.due_date.isoformat() if invoice.due_date else None,
+        "notes": invoice.notes,
         "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
         "paid_amount": paid,
         "balance": balance,
@@ -576,6 +682,11 @@ def process_return_svc(
             party_id=orig_invoice.party_id,
             invoice_type=return_type,
             total_amount=Decimal("0"),
+            reference_number=data.get("reference_number"),
+            issue_date=data.get("issue_date"),
+            due_date=data.get("due_date"),
+            notes=data.get("notes"),
+            footer_custom_text=data.get("footer_custom_text"),
         )
         invoice_repo.add(return_invoice)
         invoice_repo.flush()

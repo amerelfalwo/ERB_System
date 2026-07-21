@@ -10,8 +10,10 @@ from app.models.domain import InvoiceType
 class InvoiceItemCreatePurchase(BaseModel):
     product_id: int
     quantity: Decimal = Field(gt=0)
-    purchase_price: Decimal = Field(ge=0)
-    selling_price: Decimal = Field(ge=0)
+    purchase_price: Optional[Decimal] = Field(None, ge=0)
+    sell_price: Optional[Decimal] = Field(None, ge=0)
+    discount: Optional[Decimal] = Field(Decimal('0'), ge=0)
+    tax: Optional[Decimal] = Field(Decimal('0'), ge=0)
     original_invoice_item_id: Optional[int] = None
 
 
@@ -20,6 +22,8 @@ class InvoiceItemCreateSell(BaseModel):
     quantity: Decimal = Field(gt=0)
     sell_price: Optional[Decimal] = Field(None, ge=0)
     purchase_price: Optional[Decimal] = Field(None, ge=0)
+    discount: Optional[Decimal] = Field(Decimal('0'), ge=0)
+    tax: Optional[Decimal] = Field(Decimal('0'), ge=0)
     original_invoice_item_id: Optional[int] = None
 
 # Backwards-compatible aliases used by tests and older code
@@ -31,6 +35,12 @@ class InvoiceCreatePurchase(BaseModel):
     items: List[InvoiceItemCreatePurchase] = Field(..., min_length=1)
     amount_paid: Decimal = Field(Decimal('0'), ge=0)
     delivery_fee: Decimal = Field(Decimal('0'), ge=0)
+    total_discount: Optional[Decimal] = Field(Decimal('0'), ge=0)
+    total_tax: Optional[Decimal] = Field(Decimal('0'), ge=0)
+    reference_number: Optional[str] = None
+    issue_date: Optional[datetime] = None
+    due_date: Optional[datetime] = None
+    notes: Optional[str] = None
     footer_custom_text: Optional[str] = None
 
 
@@ -39,6 +49,12 @@ class InvoiceCreateSell(BaseModel):
     items: List[InvoiceItemCreateSell] = Field(..., min_length=1)
     amount_paid: Decimal = Field(Decimal('0'), ge=0)
     delivery_fee: Decimal = Field(Decimal('0'), ge=0)
+    total_discount: Optional[Decimal] = Field(Decimal('0'), ge=0)
+    total_tax: Optional[Decimal] = Field(Decimal('0'), ge=0)
+    reference_number: Optional[str] = None
+    issue_date: Optional[datetime] = None
+    due_date: Optional[datetime] = None
+    notes: Optional[str] = None
     footer_custom_text: Optional[str] = None
 
 # Backwards-compatible alias
@@ -54,6 +70,8 @@ class InvoiceItemOut(BaseModel):
     sell_price: Optional[Decimal] = None
     product_name: Optional[str] = None
     already_returned_qty: Optional[Decimal] = Decimal('0')
+    discount: Optional[Decimal] = Decimal('0')
+    tax: Optional[Decimal] = Decimal('0')
     original_invoice_item_id: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -65,7 +83,14 @@ class InvoiceOut(BaseModel):
     party_name: Optional[str] = None
     invoice_type: InvoiceType
     total_amount: Decimal
+    subtotal: Decimal = Decimal('0')
+    total_discount: Decimal = Decimal('0')
+    total_tax: Decimal = Decimal('0')
     delivery_fee: Decimal = Decimal('0')
+    reference_number: Optional[str] = None
+    issue_date: datetime
+    due_date: Optional[datetime] = None
+    notes: Optional[str] = None
     footer_custom_text: Optional[str] = None
     created_at: datetime
     items: List[InvoiceItemOut]
