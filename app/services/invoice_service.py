@@ -47,6 +47,9 @@ def _build_invoice_dict(inv: Invoice, paid: Decimal, party_name_map: dict = None
         "party_name": (party_name_map or {}).get(inv.party_id) if party_name_map is not None else (inv.party.name if inv.party else None),
         "invoice_type": inv.invoice_type.value if inv.invoice_type else None,
         "total_amount": inv.total_amount,
+        "subtotal": getattr(inv, "subtotal", Decimal("0")) or Decimal("0"),
+        "total_discount": getattr(inv, "total_discount", Decimal("0")) or Decimal("0"),
+        "discount_amount": getattr(inv, "discount_amount", Decimal("0")) or getattr(inv, "total_discount", Decimal("0")) or Decimal("0"),
         "delivery_fee": inv.delivery_fee if inv.delivery_fee else Decimal("0"),
         "reference_number": inv.reference_number,
         "issue_date": inv.issue_date.isoformat() if inv.issue_date else None,
@@ -249,7 +252,8 @@ def create_purchase_invoice_svc(
             product.average_cost = updated_average_cost
             invoice_repo.add(product)
 
-        invoice.total_discount = (data.total_discount or Decimal("0")) + total_item_discount
+        invoice.discount_amount = Decimal("0")
+        invoice.total_discount = total_item_discount
         invoice.total_tax = (data.total_tax or Decimal("0")) + total_item_tax
         invoice.subtotal = subtotal
         invoice.total_amount = invoice.subtotal - invoice.total_discount + invoice.total_tax + data.delivery_fee
@@ -332,7 +336,9 @@ def create_sell_invoice_svc(
                 total_item_discount += discount
                 total_item_tax += tax
 
-        invoice.total_discount = (data.total_discount or Decimal("0")) + total_item_discount
+        disc_amount = (data.discount_amount if data.discount_amount is not None and data.discount_amount > 0 else (data.total_discount or Decimal("0")))
+        invoice.discount_amount = disc_amount
+        invoice.total_discount = disc_amount + total_item_discount
         invoice.total_tax = (data.total_tax or Decimal("0")) + total_item_tax
         invoice.subtotal = subtotal
         invoice.total_amount = invoice.subtotal - invoice.total_discount + invoice.total_tax + data.delivery_fee

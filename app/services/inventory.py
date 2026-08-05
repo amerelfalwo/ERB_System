@@ -24,8 +24,8 @@ def create_purchase_invoice(db: Session, data: InvoiceCreatePurchase, tenant_id:
 
         total = Decimal("0")
         for item in data.items:
-            selling_price = item.selling_price
-            purchase_price = item.purchase_price
+            selling_price = item.sell_price or Decimal("0")
+            purchase_price = item.purchase_price or Decimal("0")
             
             product = db.execute(select(Product).where(Product.id == item.product_id)).scalar_one()
             

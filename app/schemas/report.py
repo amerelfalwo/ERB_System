@@ -76,3 +76,44 @@ class PartyProfitSummaryOut(BaseModel):
     total_revenue: Decimal
     invoice_count: int
 
+class NetProfitReportOut(BaseModel):
+    gross_profit: Decimal
+    total_expenses: Decimal
+    net_profit: Decimal
+
+class DashboardKpis(BaseModel):
+    total_sales: Decimal
+    total_purchases: Decimal
+    gross_profit: Decimal
+    total_expenses: Decimal
+    net_profit: Decimal
+    total_invoices_count: int
+    outstanding_balance: Decimal
+
+class DashboardTrendPoint(BaseModel):
+    period: str
+    sales: Decimal
+    purchases: Decimal
+    profit: Decimal
+
+class TopProductItem(BaseModel):
+    product_name: str
+    qty_sold: Decimal
+    revenue: Decimal
+
+class LowStockProductItem(BaseModel):
+    product_name: str
+    remaining_qty: Decimal
+    min_stock: Decimal
+
+class TopPartyItem(BaseModel):
+    party_name: str
+    type: str
+    total_amount: Decimal
+
+class UnifiedDashboardOut(BaseModel):
+    kpis: DashboardKpis
+    trend: List[DashboardTrendPoint]
+    top_products: List[TopProductItem]
+    low_stock_products: List[LowStockProductItem]
+    top_parties: List[TopPartyItem]

@@ -35,6 +35,7 @@ class TenantInfo(BaseModel):
     phone: Optional[str] = None
     address: Optional[str] = None
     tax_number: Optional[str] = None
+    website: Optional[str] = None
     print_notes: Optional[str] = None
     store_name: Optional[str] = None
 

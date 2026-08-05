@@ -23,6 +23,7 @@ from .api import (
     templates,
     reports,
     tenants,
+    expenses,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -48,6 +49,7 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE invoices ALTER COLUMN invoice_type TYPE VARCHAR(30);",
             "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS subtotal NUMERIC(12, 2) DEFAULT 0;",
             "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS total_discount NUMERIC(12, 2) DEFAULT 0;",
+            "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(12, 2) DEFAULT 0;",
             "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS total_tax NUMERIC(12, 2) DEFAULT 0;",
             "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS delivery_fee NUMERIC(10, 2);",
             "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS footer_custom_text TEXT;",
@@ -58,6 +60,7 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR;",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS purchase_price NUMERIC(10, 2) DEFAULT 0;",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS sell_price NUMERIC(10, 2) DEFAULT 0;",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS min_stock NUMERIC(12, 3) DEFAULT 5;",
             "ALTER TABLE parties ADD COLUMN IF NOT EXISTS notes TEXT;",
             "ALTER TABLE parties ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(12, 2) DEFAULT 0.00;",
             "ALTER TABLE stock_batches ADD COLUMN IF NOT EXISTS party_id INTEGER REFERENCES parties(id);",
@@ -173,4 +176,5 @@ app.include_router(payments, **_protected)
 app.include_router(templates, **_protected)
 app.include_router(reports, **_protected)
 app.include_router(tenants, **_protected)
+app.include_router(expenses, **_protected)
 app.include_router(admin, **_protected)

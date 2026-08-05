@@ -17,6 +17,7 @@ from .suppliers import router as suppliers
 from .templates import router as templates
 from .reports import router as reports
 from .tenants import router as tenants
+from .expenses import router as expenses
 
 __all__ = [
     "admin",
@@ -31,4 +32,5 @@ __all__ = [
     "templates",
     "reports",
     "tenants",
+    "expenses",
 ]

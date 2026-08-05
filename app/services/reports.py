@@ -16,8 +16,45 @@ from app.schemas.report import (
     DashboardAnalyticsOut,
     MonthlySales,
     RecentTransaction,
+    NetProfitReportOut,
+    DashboardKpis,
+    DashboardTrendPoint,
+    TopProductItem,
+    LowStockProductItem,
+    TopPartyItem,
+    UnifiedDashboardOut,
 )
 
+from app.models.domain import Expense
+
+def net_profit_report(db: Session, tenant_id: int = None, start_date: str = None, end_date: str = None) -> NetProfitReportOut:
+    from datetime import datetime
+
+    # 1. Get gross profit using existing profit_report logic
+    profit_data = profit_report(db, tenant_id, start_date, end_date)
+    gross_profit = profit_data.total_profit
+
+    # 2. Get total expenses for the same period
+    dt_start = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
+    dt_end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59) if end_date else None
+
+    expense_stmt = select(func.sum(Expense.amount))
+    if tenant_id is not None:
+        expense_stmt = expense_stmt.where(Expense.tenant_id == tenant_id)
+    if dt_start:
+        expense_stmt = expense_stmt.where(Expense.expense_date >= dt_start)
+    if dt_end:
+        expense_stmt = expense_stmt.where(Expense.expense_date <= dt_end)
+
+    total_expenses = db.execute(expense_stmt).scalar() or Decimal("0")
+    
+    net_profit = gross_profit - Decimal(str(total_expenses))
+
+    return NetProfitReportOut(
+        gross_profit=gross_profit,
+        total_expenses=Decimal(str(total_expenses)),
+        net_profit=net_profit
+    )
 
 def profit_report(db: Session, tenant_id: int = None, start_date: str = None, end_date: str = None) -> ProfitReportOut:
     from datetime import datetime
@@ -38,11 +75,11 @@ def profit_report(db: Session, tenant_id: int = None, start_date: str = None, en
     
     total_profit = Decimal("0")
     for inv in invoices:
-        fee = Decimal(str(inv.delivery_fee or 0))
+        disc = Decimal(str(inv.discount_amount or inv.total_discount or 0))
         if inv.invoice_type == InvoiceType.SELL_RETURN:
-            total_profit -= fee
+            total_profit += disc
         else:
-            total_profit += fee
+            total_profit -= disc
 
     # 2. Fetch items for COGS and revenue logic
     stmt = select(InvoiceItem, StockBatch, Invoice).join(
@@ -88,7 +125,7 @@ def profit_report(db: Session, tenant_id: int = None, start_date: str = None, en
 
 def party_profit_summary(db: Session, tenant_id: int) -> list:
     rows = db.execute(
-        select(Invoice.id, Invoice.invoice_type, Invoice.delivery_fee,
+        select(Invoice.id, Invoice.invoice_type, Invoice.delivery_fee, Invoice.discount_amount, Invoice.total_discount,
                Party.id.label("party_id"), Party.name.label("party_name"))
         .join(Party, Party.id == Invoice.party_id)
         .where(
@@ -99,21 +136,21 @@ def party_profit_summary(db: Session, tenant_id: int) -> list:
     ).all()
 
     invoice_ids = [r.id for r in rows]
-    invoice_meta = {r.id: (r.party_id, r.party_name, r.invoice_type, Decimal(str(r.delivery_fee or 0))) for r in rows}
+    invoice_meta = {r.id: (r.party_id, r.party_name, r.invoice_type, Decimal(str(r.delivery_fee or 0)), Decimal(str(r.discount_amount or r.total_discount or 0))) for r in rows}
 
     party_data: dict = {}
     
-    for inv_id, (party_id, party_name, inv_type, delivery_fee) in invoice_meta.items():
+    for inv_id, (party_id, party_name, inv_type, delivery_fee, discount_amount) in invoice_meta.items():
         if party_id not in party_data:
             party_data[party_id] = {"name": party_name, "profit": Decimal("0"), "revenue": Decimal("0"), "invoices": set()}
             
         party_data[party_id]["invoices"].add(inv_id)
         if inv_type == InvoiceType.SELL_RETURN:
-            party_data[party_id]["profit"] -= delivery_fee
-            party_data[party_id]["revenue"] -= delivery_fee
+            party_data[party_id]["profit"] += discount_amount
+            party_data[party_id]["revenue"] -= (delivery_fee - discount_amount)
         else:
-            party_data[party_id]["profit"] += delivery_fee
-            party_data[party_id]["revenue"] += delivery_fee
+            party_data[party_id]["profit"] -= discount_amount
+            party_data[party_id]["revenue"] += (delivery_fee - discount_amount)
 
     if not invoice_ids:
         return []
@@ -126,7 +163,7 @@ def party_profit_summary(db: Session, tenant_id: int) -> list:
     ).all()
 
     for invoice_item, batch, inv_id in item_rows:
-        party_id, party_name, inv_type, _ = invoice_meta[inv_id]
+        party_id, party_name, inv_type, _, _ = invoice_meta[inv_id]
         cost = Decimal(str(invoice_item.purchase_price if invoice_item.purchase_price is not None else (batch.purchase_price if batch and batch.purchase_price is not None else "0")))
         sale = Decimal(str(invoice_item.sell_price if invoice_item.sell_price is not None else invoice_item.unit_price))
         qty = Decimal(str(invoice_item.quantity))
@@ -410,5 +447,192 @@ def dashboard_analytics(db: Session, tenant_id: int, start_date: str = None, end
         supplier_payables=supplier_payables,
         monthly_sales=monthly_sales,
         recent_transactions=recent_transactions
+    )
+
+
+def unified_dashboard_report(db: Session, tenant_id: int, date_from: str = None, date_to: str = None) -> UnifiedDashboardOut:
+    from datetime import datetime, timedelta
+    from collections import defaultdict
+
+    dt_start = datetime.strptime(date_from, "%Y-%m-%d") if date_from else None
+    dt_end = datetime.strptime(date_to, "%Y-%m-%d").replace(hour=23, minute=59, second=59) if date_to else None
+
+    # 1. KPIs
+    # Invoices in date range
+    inv_query = select(Invoice).where(Invoice.tenant_id == tenant_id)
+    if dt_start:
+        inv_query = inv_query.where(Invoice.created_at >= dt_start)
+    if dt_end:
+        inv_query = inv_query.where(Invoice.created_at <= dt_end)
+
+    invoices = db.execute(inv_query).scalars().all()
+
+    total_sales = Decimal("0")
+    total_purchases = Decimal("0")
+    total_invoices_count = len(invoices)
+
+    for inv in invoices:
+        amt = Decimal(str(inv.total_amount or 0))
+        if inv.invoice_type == InvoiceType.SELL:
+            total_sales += amt
+        elif inv.invoice_type == InvoiceType.SELL_RETURN:
+            total_sales -= amt
+        elif inv.invoice_type == InvoiceType.PURCHASE:
+            total_purchases += amt
+        elif inv.invoice_type == InvoiceType.PURCHASE_RETURN:
+            total_purchases -= amt
+
+    net_report = net_profit_report(db, tenant_id, date_from, date_to)
+    gross_profit = net_report.gross_profit
+    total_expenses = net_report.total_expenses
+    net_profit = net_report.net_profit
+
+    dash_analytics = dashboard_analytics(db, tenant_id, date_from, date_to)
+    outstanding_balance = dash_analytics.customer_receivables
+
+    kpis = DashboardKpis(
+        total_sales=total_sales,
+        total_purchases=total_purchases,
+        gross_profit=gross_profit,
+        total_expenses=total_expenses,
+        net_profit=net_profit,
+        total_invoices_count=total_invoices_count,
+        outstanding_balance=outstanding_balance
+    )
+
+    # 2. Trend (Period grouping)
+    # Determine period format: daily if <= 31 days or default, else monthly
+    days_diff = (dt_end - dt_start).days if (dt_start and dt_end) else 30
+    group_fmt = "%Y-%m-%d" if days_diff <= 60 else "%Y-%m"
+
+    trend_map = defaultdict(lambda: {"sales": Decimal("0"), "purchases": Decimal("0"), "profit": Decimal("0")})
+    for inv in invoices:
+        period_key = inv.created_at.strftime(group_fmt)
+        amt = Decimal(str(inv.total_amount or 0))
+        if inv.invoice_type == InvoiceType.SELL:
+            trend_map[period_key]["sales"] += amt
+        elif inv.invoice_type == InvoiceType.SELL_RETURN:
+            trend_map[period_key]["sales"] -= amt
+        elif inv.invoice_type == InvoiceType.PURCHASE:
+            trend_map[period_key]["purchases"] += amt
+        elif inv.invoice_type == InvoiceType.PURCHASE_RETURN:
+            trend_map[period_key]["purchases"] -= amt
+
+    # Incorporate profit into trend map
+    p_report = profit_report(db, tenant_id, date_from, date_to)
+    for p_item in p_report.items:
+        inv_item = db.query(Invoice).get(p_item.invoice_id)
+        if inv_item:
+            period_key = inv_item.created_at.strftime(group_fmt)
+            trend_map[period_key]["profit"] += p_item.profit
+
+    sorted_periods = sorted(trend_map.keys())
+    trend = [
+        DashboardTrendPoint(
+            period=pk,
+            sales=trend_map[pk]["sales"],
+            purchases=trend_map[pk]["purchases"],
+            profit=trend_map[pk]["profit"]
+        ) for pk in sorted_periods
+    ]
+
+    # 3. Top Products
+    top_prod_query = (
+        select(
+            Product.name.label("product_name"),
+            func.coalesce(func.sum(InvoiceItem.quantity), 0).label("qty_sold"),
+            func.coalesce(func.sum(InvoiceItem.quantity * func.coalesce(InvoiceItem.sell_price, InvoiceItem.unit_price)), 0).label("revenue")
+        )
+        .join(StockBatch, StockBatch.id == InvoiceItem.batch_id)
+        .join(Product, Product.id == StockBatch.product_id)
+        .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+        .where(Invoice.tenant_id == tenant_id, Invoice.invoice_type == InvoiceType.SELL)
+    )
+    if dt_start:
+        top_prod_query = top_prod_query.where(Invoice.created_at >= dt_start)
+    if dt_end:
+        top_prod_query = top_prod_query.where(Invoice.created_at <= dt_end)
+
+    top_prod_rows = db.execute(
+        top_prod_query.group_by(Product.id, Product.name)
+        .order_by(func.sum(InvoiceItem.quantity * func.coalesce(InvoiceItem.sell_price, InvoiceItem.unit_price)).desc())
+        .limit(5)
+    ).all()
+
+    top_products = [
+        TopProductItem(
+            product_name=row.product_name,
+            qty_sold=Decimal(str(row.qty_sold)),
+            revenue=Decimal(str(row.revenue))
+        ) for row in top_prod_rows
+    ]
+
+    # 4. Low Stock Products
+    batch_subq = (
+        select(
+            StockBatch.product_id,
+            func.coalesce(func.sum(StockBatch.remaining_quantity), 0).label("remaining_qty")
+        )
+        .where(StockBatch.tenant_id == tenant_id)
+        .group_by(StockBatch.product_id)
+        .subquery()
+    )
+
+    low_stock_query = (
+        select(
+            Product.name.label("product_name"),
+            func.coalesce(batch_subq.c.remaining_qty, 0).label("remaining_qty"),
+            func.coalesce(Product.min_stock, 5).label("min_stock")
+        )
+        .outerjoin(batch_subq, batch_subq.c.product_id == Product.id)
+        .where(Product.tenant_id == tenant_id)
+        .where(func.coalesce(batch_subq.c.remaining_qty, 0) <= func.coalesce(Product.min_stock, 5))
+        .limit(5)
+    )
+
+    low_stock_rows = db.execute(low_stock_query).all()
+    low_stock_products = [
+        LowStockProductItem(
+            product_name=row.product_name,
+            remaining_qty=Decimal(str(row.remaining_qty)),
+            min_stock=Decimal(str(row.min_stock))
+        ) for row in low_stock_rows
+    ]
+
+    # 5. Top Parties
+    top_party_query = (
+        select(
+            Party.name.label("party_name"),
+            Party.party_type.label("party_type"),
+            func.coalesce(func.sum(Invoice.total_amount), 0).label("total_amount")
+        )
+        .join(Party, Party.id == Invoice.party_id)
+        .where(Invoice.tenant_id == tenant_id)
+    )
+    if dt_start:
+        top_party_query = top_party_query.where(Invoice.created_at >= dt_start)
+    if dt_end:
+        top_party_query = top_party_query.where(Invoice.created_at <= dt_end)
+
+    top_party_rows = db.execute(
+        top_party_query.group_by(Party.id, Party.name, Party.party_type)
+        .order_by(func.sum(Invoice.total_amount).desc())
+        .limit(5)
+    ).all()
+
+    top_parties = [
+        TopPartyItem(
+            party_name=row.party_name,
+            type=str(row.party_type.value if hasattr(row.party_type, "value") else row.party_type).upper(),
+            total_amount=Decimal(str(row.total_amount))
+        ) for row in top_party_rows
+    ]
+
+    return UnifiedDashboardOut(
+        kpis=kpis,
+        trend=trend,
+        top_products=top_products,
+        low_stock_products=low_stock_products,
+        top_parties=top_parties
     )
 

@@ -28,6 +28,7 @@ class Tenant(Base):
     address = Column(Text, nullable=True)
     tax_number = Column(String, nullable=True)
     store_name = Column(String, nullable=True)
+    website = Column(String, nullable=True)
     print_notes = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True)
     is_approved = Column(Boolean, default=False, server_default="false", index=True)
@@ -71,6 +72,7 @@ class Product(Base):
     purchase_price = Column(Numeric(12, 2), default=0)
     average_cost = Column(Numeric(12, 2), default=0)
     sell_price = Column(Numeric(12, 2), default=0)
+    min_stock = Column(Numeric(12, 3), default=5)
     tenant = relationship("Tenant", back_populates="products")
     batches = relationship("StockBatch", back_populates="product", passive_deletes=True)
 
@@ -105,6 +107,7 @@ class Invoice(Base):
     total_amount = Column(Numeric(12, 2))
     subtotal = Column(Numeric(12, 2), default=0)
     total_discount = Column(Numeric(12, 2), default=0)
+    discount_amount = Column(Numeric(12, 2), default=0)
     total_tax = Column(Numeric(12, 2), default=0)
     delivery_fee = Column(Numeric(12, 2), default=0)
     reference_number = Column(String, nullable=True, index=True)
@@ -161,3 +164,16 @@ class User(Base):
     hashed_password = Column(String)
     role = Column(String, default="admin", server_default="admin")
     tenant = relationship("Tenant", back_populates="users")
+
+class Expense(Base):
+    __tablename__ = "expenses"
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    description = Column(String, nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
+    expense_date = Column(DateTime, nullable=False, index=True)
+    category = Column(String, nullable=True, index=True)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    tenant = relationship("Tenant")
+    creator = relationship("User")

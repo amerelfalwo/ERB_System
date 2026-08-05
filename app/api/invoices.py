@@ -70,6 +70,7 @@ def _invoice_out(invoice, invoice_repo: InvoiceRepository, party_repo: PartyRepo
         total_amount=invoice.total_amount,
         subtotal=getattr(invoice, "subtotal", Decimal("0")) or Decimal("0"),
         total_discount=getattr(invoice, "total_discount", Decimal("0")) or Decimal("0"),
+        discount_amount=getattr(invoice, "discount_amount", Decimal("0")) or getattr(invoice, "total_discount", Decimal("0")) or Decimal("0"),
         total_tax=getattr(invoice, "total_tax", Decimal("0")) or Decimal("0"),
         delivery_fee=invoice.delivery_fee or Decimal("0"),
         reference_number=invoice.reference_number,

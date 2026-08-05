@@ -36,6 +36,7 @@ class InvoiceCreatePurchase(BaseModel):
     amount_paid: Decimal = Field(Decimal('0'), ge=0)
     delivery_fee: Decimal = Field(Decimal('0'), ge=0)
     total_discount: Optional[Decimal] = Field(Decimal('0'), ge=0)
+    discount_amount: Optional[Decimal] = Field(Decimal('0'), ge=0)
     total_tax: Optional[Decimal] = Field(Decimal('0'), ge=0)
     reference_number: Optional[str] = None
     issue_date: Optional[datetime] = None
@@ -50,6 +51,7 @@ class InvoiceCreateSell(BaseModel):
     amount_paid: Decimal = Field(Decimal('0'), ge=0)
     delivery_fee: Decimal = Field(Decimal('0'), ge=0)
     total_discount: Optional[Decimal] = Field(Decimal('0'), ge=0)
+    discount_amount: Optional[Decimal] = Field(Decimal('0'), ge=0)
     total_tax: Optional[Decimal] = Field(Decimal('0'), ge=0)
     reference_number: Optional[str] = None
     issue_date: Optional[datetime] = None
@@ -85,6 +87,7 @@ class InvoiceOut(BaseModel):
     total_amount: Decimal
     subtotal: Decimal = Decimal('0')
     total_discount: Decimal = Decimal('0')
+    discount_amount: Decimal = Decimal('0')
     total_tax: Decimal = Decimal('0')
     delivery_fee: Decimal = Decimal('0')
     reference_number: Optional[str] = None

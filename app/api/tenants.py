@@ -22,6 +22,7 @@ class TenantSettingsUpdate(BaseModel):
     phone: Optional[str] = None
     address: Optional[str] = None
     tax_number: Optional[str] = None
+    website: Optional[str] = None
     print_notes: Optional[str] = None
     primary_color: Optional[str] = None
     default_footer_text: Optional[str] = None
@@ -32,6 +33,7 @@ class TenantUpdate(BaseModel):
     phone: Optional[str] = None
     address: Optional[str] = None
     tax_number: Optional[str] = None
+    website: Optional[str] = None
     default_invoice_footer: Optional[str] = None
 
 
@@ -45,6 +47,7 @@ class TenantOut(BaseModel):
     phone: Optional[str] = None
     address: Optional[str] = None
     tax_number: Optional[str] = None
+    website: Optional[str] = None
     print_notes: Optional[str] = None
     is_active: bool
 
