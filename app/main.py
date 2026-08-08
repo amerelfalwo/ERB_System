@@ -39,8 +39,19 @@ async def lifespan(app: FastAPI):
     _logger = logging.getLogger(__name__)
 
     try:
-        # Create all tables that don't yet exist
-        Base.metadata.create_all(bind=engine)
+        import time
+        # Create all tables that don't yet exist (with retry for pooler resilience)
+        _max_db_retries = 3
+        _retry_wait = 2
+        for attempt in range(1, _max_db_retries + 1):
+            try:
+                Base.metadata.create_all(bind=engine)
+                break
+            except Exception as db_err:
+                if attempt == _max_db_retries:
+                    raise
+                _logger.warning("DB table creation attempt %d/%d failed: %s. Retrying in %ds...", attempt, _max_db_retries, db_err, _retry_wait)
+                time.sleep(_retry_wait)
 
         from sqlalchemy import text
         import traceback

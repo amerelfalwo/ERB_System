@@ -27,7 +27,13 @@ db_url = make_url(_raw_url)
 #    • No `options` — PgBouncer/Supavisor rejects unknown startup params.
 #    • `sslmode=require` for remote hosts.
 # ---------------------------------------------------------------------------
-connect_args: dict = {"connect_timeout": 10}
+connect_args: dict = {
+    "connect_timeout": 10,
+    "keepalives": 1,
+    "keepalives_idle": 30,
+    "keepalives_interval": 10,
+    "keepalives_count": 5,
+}
 if db_url.host and db_url.host not in {"localhost", "127.0.0.1"}:
     connect_args["sslmode"] = "require"
 
@@ -38,6 +44,7 @@ if db_url.host and db_url.host not in {"localhost", "127.0.0.1"}:
 engine = create_engine(
     _raw_url,
     poolclass=NullPool,
+    pool_pre_ping=True,
     connect_args=connect_args,
 )
 
