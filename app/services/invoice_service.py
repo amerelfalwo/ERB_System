@@ -1,12 +1,13 @@
 import logging
 from decimal import Decimal
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.cache import invalidate_tenant_cache_sync
 from app.core.constants import (
     ERR_INSUFFICIENT_STOCK, ERR_NO_VALID_RETURN_ITEMS, ERR_RETURN_QTY_EXCEEDS,
     ERR_CANNOT_DELETE_HAS_STOCK, ERR_CANNOT_MODIFY_RETURN,
@@ -95,20 +96,23 @@ def get_party_previous_balance_svc(
     party_id: int,
     invoice_id: int,
     invoice_type: InvoiceType,
-) -> Decimal:
-    party = party_repo.get_by_id(party_id)
+    party: Optional[Party] = None,
+) -> Tuple[Decimal, Optional[Party]]:
+    if not party:
+        party = party_repo.get_by_id(party_id)
     initial_balance = party.initial_balance if party and party.initial_balance else Decimal("0")
+    summary = party_repo.get_party_financial_summary_excluding(party_id, invoice_id)
     if invoice_type in (INVOICE_TYPE_SELL, INVOICE_TYPE_SELL_RETURN):
-        inv_total = party_repo.total_invoiced_net_excluding(party_id, invoice_id)
+        inv_total = summary["sale_net"]
     else:
-        inv_total = party_repo.total_purchased_net_excluding(party_id, invoice_id)
-    paid_total = party_repo.total_paid_excluding(party_id, invoice_id)
-    return initial_balance + inv_total - paid_total
+        inv_total = summary["purchase_net"]
+    paid_total = summary["paid_total"]
+    return initial_balance + inv_total - paid_total, party
 
 
-def list_invoices_svc(invoice_repo: InvoiceRepository, party_id=None, invoice_type: str = None, skip: int = 0, limit: int = 100) -> dict:
-    total = invoice_repo.count(party_id=party_id, invoice_type=invoice_type)
-    invoices = invoice_repo.list(party_id=party_id, invoice_type=invoice_type, skip=skip, limit=limit)
+def list_invoices_svc(invoice_repo: InvoiceRepository, party_id=None, invoice_type: str = None, search: str = None, status: str = None, skip: int = 0, limit: int = 100) -> dict:
+    total = invoice_repo.count(party_id=party_id, invoice_type=invoice_type, search=search, status=status)
+    invoices = invoice_repo.list(party_id=party_id, invoice_type=invoice_type, search=search, status=status, skip=skip, limit=limit)
     ids = [i.id for i in invoices]
     payment_map = invoice_repo.bulk_payment_sums(ids)
     party_ids = {i.party_id for i in invoices if i.party_id}
@@ -168,6 +172,13 @@ def create_purchase_invoice_svc(
         invoice_repo.add(invoice)
         invoice_repo.flush()
 
+        product_ids = list({item.product_id for item in data.items})
+        products = db.execute(
+            select(Product).where(Product.id.in_(product_ids), Product.tenant_id == tenant_id)
+        ).scalars().all()
+        product_map = {p.id: p for p in products}
+        latest_batches = batch_repo.get_latest_batches_for_products(product_ids)
+
         subtotal = Decimal("0")
         total_item_discount = Decimal("0")
         total_item_tax = Decimal("0")
@@ -176,17 +187,17 @@ def create_purchase_invoice_svc(
             selling_price = item.sell_price
             purchase_price = item.purchase_price
             
-            product = db.execute(select(Product).where(Product.id == item.product_id, Product.tenant_id == tenant_id)).scalar_one()
+            product = product_map.get(item.product_id)
+            if not product:
+                raise HTTPException(status_code=404, detail=f"المنتج ID {item.product_id} غير موجود")
             
             if not selling_price or selling_price <= 0:
                 if product.sell_price and product.sell_price > 0:
                     selling_price = product.sell_price
                 else:
-                    prev_batch_sell = db.execute(
-                        select(StockBatch).where(StockBatch.product_id == item.product_id, StockBatch.tenant_id == tenant_id, StockBatch.current_selling_price > 0).order_by(StockBatch.id.desc()).limit(1)
-                    ).scalar_one_or_none()
-                    if prev_batch_sell:
-                        selling_price = prev_batch_sell.current_selling_price
+                    prev_batch = latest_batches.get(item.product_id)
+                    if prev_batch and prev_batch.current_selling_price and prev_batch.current_selling_price > 0:
+                        selling_price = prev_batch.current_selling_price
                         
             if not selling_price or selling_price <= 0:
                 selling_price = Decimal("0")
@@ -195,11 +206,9 @@ def create_purchase_invoice_svc(
                 if product.purchase_price and product.purchase_price > 0:
                     purchase_price = product.purchase_price
                 else:
-                    prev_batch_purch = db.execute(
-                        select(StockBatch).where(StockBatch.product_id == item.product_id, StockBatch.tenant_id == tenant_id, StockBatch.purchase_price > 0).order_by(StockBatch.id.desc()).limit(1)
-                    ).scalar_one_or_none()
-                    if prev_batch_purch:
-                        purchase_price = prev_batch_purch.purchase_price
+                    prev_batch = latest_batches.get(item.product_id)
+                    if prev_batch and prev_batch.purchase_price and prev_batch.purchase_price > 0:
+                        purchase_price = prev_batch.purchase_price
                         
             if not purchase_price or purchase_price <= 0:
                 raise HTTPException(status_code=400, detail=f"سعر الشراء غير محدد أو صفر للمنتج ID {item.product_id}. يرجى إدخال سعر شراء صحيح.")
@@ -268,6 +277,7 @@ def create_purchase_invoice_svc(
 
         invoice_repo.commit()
         invoice_repo.refresh(invoice)
+        invalidate_tenant_cache_sync(tenant_id, ["dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
         logger.info("Purchase invoice #%s created successfully. Batches: %s. Total: %s",
                     invoice.id, batches_created, invoice.total_amount)
         return invoice
@@ -300,12 +310,39 @@ def create_sell_invoice_svc(
         invoice_repo.add(invoice)
         invoice_repo.flush()
 
+        product_ids = list({item.product_id for item in data.items})
+        highest_prices = {}
+        if product_ids:
+            rows = batch_repo._db.execute(
+                select(StockBatch.product_id, func.max(StockBatch.current_selling_price))
+                .where(
+                    StockBatch.product_id.in_(product_ids),
+                    StockBatch.tenant_id == tenant_id,
+                    StockBatch.remaining_quantity > 0,
+                )
+                .group_by(StockBatch.product_id)
+            ).all()
+            highest_prices = {row[0]: row[1] for row in rows}
+            
+            missing_pids = [pid for pid in product_ids if pid not in highest_prices]
+            if missing_pids:
+                fallback_rows = batch_repo._db.execute(
+                    select(StockBatch.product_id, func.max(StockBatch.current_selling_price))
+                    .where(
+                        StockBatch.product_id.in_(missing_pids),
+                        StockBatch.tenant_id == tenant_id,
+                    )
+                    .group_by(StockBatch.product_id)
+                ).all()
+                for pid, pr in fallback_rows:
+                    highest_prices[pid] = pr
+
         subtotal = Decimal("0")
         total_item_discount = Decimal("0")
         total_item_tax = Decimal("0")
         
         for item in data.items:
-            latest_price = batch_repo.get_highest_selling_price(item.product_id)
+            latest_price = highest_prices.get(item.product_id)
             if latest_price is None:
                 raise HTTPException(status_code=400, detail="No batches available")
             effective_price = Decimal(str(item.sell_price)) if item.sell_price is not None else latest_price
@@ -368,13 +405,15 @@ def update_invoice_svc(
         new_items_total = Decimal("0")
 
         # Prevent modification of items if there are associated returns
-        if data.get("items") is not None:
-            for item in invoice.items:
-                returns_count = invoice_repo._db.execute(
-                    select(func.count(InvoiceItem.id)).where(InvoiceItem.original_invoice_item_id == item.id)
-                ).scalar()
-                if returns_count and returns_count > 0:
-                    raise HTTPException(status_code=400, detail="لا يمكن تعديل الفاتورة لوجود مرتجعات مرتبطة بها")
+        if data.get("items") is not None and invoice.items:
+            item_ids = [item.id for item in invoice.items]
+            has_returns = invoice_repo._db.execute(
+                select(InvoiceItem.original_invoice_item_id)
+                .where(InvoiceItem.original_invoice_item_id.in_(item_ids))
+                .limit(1)
+            ).scalar_one_or_none()
+            if has_returns:
+                raise HTTPException(status_code=400, detail="لا يمكن تعديل الفاتورة لوجود مرتجعات مرتبطة بها")
 
         new_items = data.get("items")
         if new_items is not None:
@@ -543,6 +582,7 @@ def update_invoice_svc(
             invoice.notes = data.get("notes")
 
         invoice_repo.commit()
+        invalidate_tenant_cache_sync(tenant_id, ["dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
     except Exception:
         invoice_repo.rollback()
         raise
@@ -552,13 +592,12 @@ def update_invoice_svc(
 
     paid = invoice_repo.get_paid_amount(invoice.id)
     balance = invoice.total_amount - paid
+    item_ids = [i.id for i in invoice.items]
+    returned_qty_map = invoice_repo.get_returned_quantities_for_items(item_ids)
     items_out = []
     for i in invoice.items:
         product_name = i.batch.product.name if i.batch and i.batch.product else None
-        already_returned_qty = invoice_repo._db.execute(
-            select(func.sum(InvoiceItem.quantity))
-            .where(InvoiceItem.original_invoice_item_id == i.id)
-        ).scalar() or Decimal("0")
+        already_returned_qty = returned_qty_map.get(i.id, Decimal("0"))
         items_out.append({
             "id": i.id, "batch_id": i.batch_id,
             "product_id": i.batch.product_id if i.batch else None,
@@ -591,34 +630,45 @@ def delete_invoice_svc(
     invoice_repo: InvoiceRepository, batch_repo: BatchRepository, invoice: Invoice
 ) -> None:
     try:
-        for item in invoice.items:
-            returns_count = invoice_repo._db.execute(
-                select(func.count(InvoiceItem.id)).where(InvoiceItem.original_invoice_item_id == item.id)
-            ).scalar()
-            if returns_count and returns_count > 0:
+        tenant_id = invoice.tenant_id
+        if invoice.items:
+            item_ids = [item.id for item in invoice.items]
+            has_returns = invoice_repo._db.execute(
+                select(InvoiceItem.original_invoice_item_id)
+                .where(InvoiceItem.original_invoice_item_id.in_(item_ids))
+                .limit(1)
+            ).scalar_one_or_none()
+            if has_returns:
                 raise HTTPException(status_code=400, detail="لا يمكن حذف الفاتورة لوجود مرتجعات مرتبطة بها")
 
         batches_to_delete = []
         if invoice.invoice_type in (INVOICE_TYPE_SELL, INVOICE_TYPE_PURCHASE_RETURN):
-            for item in invoice.items:
-                b = batch_repo.get_by_id(item.batch_id)
-                if b:
-                    b.remaining_quantity += item.quantity
+            batch_ids = [item.batch_id for item in invoice.items if item.batch_id]
+            if batch_ids:
+                batches = batch_repo._db.execute(
+                    select(StockBatch).where(StockBatch.id.in_(batch_ids))
+                ).scalars().all()
+                batch_map = {b.id: b for b in batches}
+                for item in invoice.items:
+                    b = batch_map.get(item.batch_id)
+                    if b:
+                        b.remaining_quantity += item.quantity
         elif invoice.invoice_type in (INVOICE_TYPE_PURCHASE, INVOICE_TYPE_SELL_RETURN):
-            for item in invoice.items:
-                b = batch_repo.get_by_id(item.batch_id)
-                if b:
-                    # Check if any OTHER invoice item references this batch
-                    other_items_count = invoice_repo._db.execute(
-                        select(func.count(InvoiceItem.id))
-                        .where(InvoiceItem.batch_id == b.id, InvoiceItem.invoice_id != invoice.id)
-                    ).scalar()
-                    if other_items_count and other_items_count > 0:
-                        raise HTTPException(
-                            status_code=400, 
-                            detail=ERR_CANNOT_DELETE_HAS_STOCK
-                        )
-                    batches_to_delete.append(b)
+            batch_ids = [item.batch_id for item in invoice.items if item.batch_id]
+            if batch_ids:
+                other_items_count = invoice_repo._db.execute(
+                    select(InvoiceItem.batch_id)
+                    .where(InvoiceItem.batch_id.in_(batch_ids), InvoiceItem.invoice_id != invoice.id)
+                    .limit(1)
+                ).scalar_one_or_none()
+                if other_items_count:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=ERR_CANNOT_DELETE_HAS_STOCK
+                    )
+                batches_to_delete = batch_repo._db.execute(
+                    select(StockBatch).where(StockBatch.id.in_(batch_ids))
+                ).scalars().all()
 
         for item in invoice.items:
             invoice_repo.delete(item)
@@ -633,6 +683,7 @@ def delete_invoice_svc(
 
         invoice_repo.delete(invoice)
         invoice_repo.commit()
+        invalidate_tenant_cache_sync(tenant_id, ["dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
     except Exception:
         invoice_repo.rollback()
         raise

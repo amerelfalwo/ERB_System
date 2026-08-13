@@ -520,11 +520,17 @@ def unified_dashboard_report(db: Session, tenant_id: int, date_from: str = None,
 
     # Incorporate profit into trend map
     p_report = profit_report(db, tenant_id, date_from, date_to)
-    for p_item in p_report.items:
-        inv_item = db.query(Invoice).get(p_item.invoice_id)
-        if inv_item:
-            period_key = inv_item.created_at.strftime(group_fmt)
-            trend_map[period_key]["profit"] += p_item.profit
+    inv_ids = {p_item.invoice_id for p_item in p_report.items if p_item.invoice_id}
+    if inv_ids:
+        inv_rows = db.execute(
+            select(Invoice.id, Invoice.created_at).where(Invoice.id.in_(inv_ids))
+        ).all()
+        inv_created_at_map = {row.id: row.created_at for row in inv_rows}
+        for p_item in p_report.items:
+            created_at = inv_created_at_map.get(p_item.invoice_id)
+            if created_at:
+                period_key = created_at.strftime(group_fmt)
+                trend_map[period_key]["profit"] += p_item.profit
 
     sorted_periods = sorted(trend_map.keys())
     trend = [

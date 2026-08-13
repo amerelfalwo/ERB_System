@@ -13,7 +13,7 @@ def test_partial_and_full_payment(db, party_supplier, product, dec):
                 product_id=product.id,
                 quantity=dec("4"),
                 purchase_price=dec("7.50"),
-                selling_price=dec("10.00"),
+                sell_price=dec("10.00"),
             )
         ],
     )
@@ -39,7 +39,7 @@ def test_payment_over_allocation(db, party_supplier, product, dec):
                 product_id=product.id,
                 quantity=dec("4"),
                 purchase_price=dec("7.50"),
-                selling_price=dec("10.00"),
+                sell_price=dec("10.00"),
             )
         ],
     )
@@ -55,7 +55,6 @@ def test_payment_over_allocation(db, party_supplier, product, dec):
                 invoice_id=invoice.id,
                 amount=dec("35.00"),
             ),
-            tenant_id=1,
         )
     assert "Cannot pay more than the outstanding balance of the invoice" in str(exc_info.value)
 
@@ -79,7 +78,6 @@ def test_payment_over_allocation(db, party_supplier, product, dec):
                 invoice_id=invoice.id,
                 amount=dec("25.00"),
             ),
-            tenant_id=1,
         )
     assert "Cannot pay more than the outstanding balance of the invoice" in str(exc_info.value)
 
@@ -93,6 +91,5 @@ def test_payment_over_allocation(db, party_supplier, product, dec):
                 party_id=party_supplier.id,
                 amount=dec("25.00"),
             ),
-            tenant_id=1,
         )
     assert "Cannot pay more than the outstanding balance" in str(exc_info.value)

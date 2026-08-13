@@ -29,7 +29,7 @@ class InvoiceRepository:
             .where(Invoice.id == invoice_id, Invoice.tenant_id == self._tid)
         ).scalar_one_or_none()
 
-    def list(self, party_id: Optional[int] = None, invoice_type: Optional[str] = None, skip: int = 0, limit: int = 100) -> List[Invoice]:
+    def list(self, party_id: Optional[int] = None, invoice_type: Optional[str] = None, search: Optional[str] = None, status: Optional[str] = None, skip: int = 0, limit: int = 100) -> List[Invoice]:
         q = (
             select(Invoice)
             .options(
@@ -42,7 +42,6 @@ class InvoiceRepository:
         if party_id is not None:
             q = q.where(Invoice.party_id == party_id)
         if invoice_type:
-            # Accept either 'sale'/'sell' or 'purchase' values
             it = invoice_type.lower()
             if it in ('sale', 'sell'):
                 q = q.where(Invoice.invoice_type == InvoiceType.SELL)
@@ -52,11 +51,17 @@ class InvoiceRepository:
                 q = q.where(Invoice.invoice_type == InvoiceType.SELL_RETURN)
             elif it in ('purchase_return',):
                 q = q.where(Invoice.invoice_type == InvoiceType.PURCHASE_RETURN)
+        if search:
+            s = search.strip()
+            if s.isdigit():
+                q = q.where(Invoice.id == int(s))
+            else:
+                q = q.join(Party, Invoice.party_id == Party.id, isouter=True).where(Party.name.ilike(f"%{s}%"))
 
         q = q.order_by(Invoice.created_at.desc()).offset(skip).limit(limit)
         return self._db.execute(q).scalars().unique().all()
 
-    def count(self, party_id: Optional[int] = None, invoice_type: Optional[str] = None) -> int:
+    def count(self, party_id: Optional[int] = None, invoice_type: Optional[str] = None, search: Optional[str] = None, status: Optional[str] = None) -> int:
         q = select(func.count(Invoice.id)).where(Invoice.tenant_id == self._tid)
         if party_id is not None:
             q = q.where(Invoice.party_id == party_id)
@@ -70,6 +75,12 @@ class InvoiceRepository:
                 q = q.where(Invoice.invoice_type == InvoiceType.SELL_RETURN)
             elif it in ('purchase_return',):
                 q = q.where(Invoice.invoice_type == InvoiceType.PURCHASE_RETURN)
+        if search:
+            s = search.strip()
+            if s.isdigit():
+                q = q.where(Invoice.id == int(s))
+            else:
+                q = q.join(Party, Invoice.party_id == Party.id, isouter=True).where(Party.name.ilike(f"%{s}%"))
         return self._db.execute(q).scalar_one()
 
     def bulk_payment_sums(self, invoice_ids: List[int]) -> dict:
@@ -181,6 +192,27 @@ class BatchRepository:
         ).scalar_one_or_none()
         return Decimal(str(total)) if total is not None else Decimal("0")
 
+    def get_latest_batches_for_products(self, product_ids: List[int]) -> dict:
+        if not product_ids:
+            return {}
+        latest_batch_subq = (
+            select(
+                StockBatch.product_id,
+                func.max(StockBatch.id).label("max_batch_id")
+            )
+            .where(
+                StockBatch.product_id.in_(product_ids),
+                StockBatch.tenant_id == self._tid
+            )
+            .group_by(StockBatch.product_id)
+            .subquery()
+        )
+        latest_batches = self._db.execute(
+            select(StockBatch)
+            .join(latest_batch_subq, (StockBatch.id == latest_batch_subq.c.max_batch_id))
+        ).scalars().all()
+        return {batch.product_id: batch for batch in latest_batches}
+
     def add(self, batch: StockBatch) -> None:
         self._db.add(batch)
 
@@ -288,6 +320,35 @@ class PartyRepository:
         ).scalar_one()))
         return purchase_total - return_total
 
+    def get_party_financial_summary_excluding(self, party_id: int, exclude_invoice_id: int) -> dict:
+        inv_rows = self._db.execute(
+            select(Invoice.invoice_type, func.coalesce(func.sum(Invoice.total_amount), 0))
+            .where(
+                Invoice.party_id == party_id,
+                Invoice.tenant_id == self._tid,
+                Invoice.id != exclude_invoice_id,
+            )
+            .group_by(Invoice.invoice_type)
+        ).all()
+        inv_map = {row[0]: Decimal(str(row[1])) for row in inv_rows}
+
+        paid_total = Decimal(str(self._db.execute(
+            select(func.coalesce(func.sum(Payment.amount), 0)).join(Party).where(
+                Payment.party_id == party_id,
+                (Payment.invoice_id != exclude_invoice_id) | (Payment.invoice_id.is_(None)),
+                Party.tenant_id == self._tid,
+            )
+        ).scalar_one()))
+
+        sale_net = inv_map.get(InvoiceType.SELL, Decimal("0")) - inv_map.get(InvoiceType.SELL_RETURN, Decimal("0"))
+        purchase_net = inv_map.get(InvoiceType.PURCHASE, Decimal("0")) - inv_map.get(InvoiceType.PURCHASE_RETURN, Decimal("0"))
+
+        return {
+            "sale_net": sale_net,
+            "purchase_net": purchase_net,
+            "paid_total": paid_total,
+        }
+
     def total_paid_excluding(self, party_id: int, exclude_invoice_id: int) -> Decimal:
         return Decimal(str(self._db.execute(
             select(func.coalesce(func.sum(Payment.amount), 0)).join(Party).where(
@@ -320,10 +381,12 @@ class ProductRepository:
             select(Product).where(Product.id == product_id, Product.tenant_id == self._tid)
         ).scalar_one_or_none()
 
-    def list(self, skip: int = 0, limit: int = 100) -> List[Product]:
+    def list(self, skip: int = 0, limit: int = 100, search: Optional[str] = None) -> List[Product]:
+        q = select(Product).where(Product.tenant_id == self._tid)
+        if search:
+            q = q.where(Product.name.ilike(f"%{search.strip()}%"))
         return self._db.execute(
-            select(Product).where(Product.tenant_id == self._tid)
-            .offset(skip).limit(limit)
+            q.offset(skip).limit(limit)
         ).scalars().all()
 
     def get_all_for_select(self) -> List[dict]:

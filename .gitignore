@@ -66,3 +66,5 @@ logs/
 
 # Lock file (optional — include if you want reproducible deploys)
 # uv.lock
+
+tests/*

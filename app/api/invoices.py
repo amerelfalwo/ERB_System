@@ -30,7 +30,9 @@ router = APIRouter(prefix="/invoices", tags=["invoices"])
 def _invoice_out(invoice, invoice_repo: InvoiceRepository, party_repo: PartyRepository) -> InvoiceOut:
     totals = get_invoice_totals_svc(invoice_repo, invoice)
     inv_type = INVOICE_TYPE_SELL if invoice.invoice_type == INVOICE_TYPE_SELL else INVOICE_TYPE_PURCHASE
-    prev_balance = get_party_previous_balance_svc(party_repo, invoice.party_id, invoice.id, inv_type)
+    party = getattr(invoice, "party", None)
+    prev_balance, party = get_party_previous_balance_svc(party_repo, invoice.party_id, invoice.id, inv_type, party=party)
+    party_name = party.name if party else None
 
     # Bulk fetch already returned quantities for all invoice items in one query
     item_ids = [item.id for item in invoice.items]
@@ -58,9 +60,6 @@ def _invoice_out(invoice, invoice_repo: InvoiceRepository, party_repo: PartyRepo
             tax=getattr(item, "tax", Decimal("0")) or Decimal("0"),
             original_invoice_item_id=item.original_invoice_item_id,
         ))
-
-    party = party_repo.get_by_id(invoice.party_id)
-    party_name = party.name if party else None
 
     return InvoiceOut(
         id=invoice.id,
@@ -92,13 +91,15 @@ def _invoice_out(invoice, invoice_repo: InvoiceRepository, party_repo: PartyRepo
 def list_invoices(
     party_id: int = None,
     invoice_type: str = None,
+    search: str = None,
+    status: str = None,
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     inv_repo = InvoiceRepository(db, current_user.tenant_id)
-    return list_invoices_svc(inv_repo, party_id=party_id, invoice_type=invoice_type, skip=skip, limit=limit)
+    return list_invoices_svc(inv_repo, party_id=party_id, invoice_type=invoice_type, search=search, status=status, skip=skip, limit=limit)
 
 
 @router.post("/purchase", response_model=InvoiceOut)

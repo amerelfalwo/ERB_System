@@ -42,8 +42,11 @@ class ProductWithCostOut(BaseModel):
 
 
 
+from app.core.cache import get_cache, set_cache, invalidate_tenant_cache
+
+
 @router.post("", response_model=ProductWithCostOut)
-def create_product(
+async def create_product(
     data: ProductCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -57,6 +60,9 @@ def create_product(
     db.add(product)
     db.commit()
     db.refresh(product)
+    
+    await invalidate_tenant_cache(current_user.tenant_id, ["products", "reports:inventory"])
+
     return ProductWithCostOut(
         id=product.id,
         name=product.name,
@@ -68,16 +74,20 @@ def create_product(
 
 
 @router.get("", response_model=list[ProductWithCostOut])
-def list_products(
+async def list_products(
     skip: int = 0,
     limit: int = 100,
+    search: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    from collections import defaultdict
+    cache_key = f"products:list:{skip}:{limit}:{search or ''}"
+    cached = await get_cache(current_user.tenant_id, cache_key)
+    if cached is not None:
+        return cached
 
     prod_repo = ProductRepository(db, current_user.tenant_id)
-    products = prod_repo.list(skip=skip, limit=limit)
+    products = prod_repo.list(skip=skip, limit=limit, search=search)
     if not products:
         return []
 
@@ -108,6 +118,9 @@ def list_products(
                 supplier_name=supplier_dict.get(product.id)
             )
         )
+
+    res_dict = [r.model_dump() if hasattr(r, "model_dump") else r.dict() for r in result]
+    await set_cache(current_user.tenant_id, cache_key, res_dict, ttl=300)
     return result
 
 
@@ -121,7 +134,7 @@ def list_products_select(
 
 
 @router.delete("/{product_id}")
-def delete_product(
+async def delete_product(
     product_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -141,13 +154,15 @@ def delete_product(
         raise HTTPException(status_code=400, detail="لا يمكن حذف المنتج لوجود مخزون")
     db.delete(product)
     db.commit()
+
+    await invalidate_tenant_cache(current_user.tenant_id, ["products", "reports:inventory"])
     return {"status": "deleted"}
 
 
 from app.schemas.product import ProductUpdate
 
 @router.put("/{product_id}", response_model=ProductWithCostOut)
-def update_product(
+async def update_product(
     product_id: int,
     data: ProductUpdate,
     db: Session = Depends(get_db),
@@ -169,11 +184,13 @@ def update_product(
     db.commit()
     db.refresh(product)
 
+    await invalidate_tenant_cache(current_user.tenant_id, ["products", "reports:inventory"])
+
     return ProductWithCostOut(
         id=product.id,
         name=product.name,
         last_purchase_price=float(product.last_purchase_price or 0),
         purchase_price=float(product.purchase_price or 0),
         sell_price=float(product.sell_price or 0),
-        supplier_name=None,  # Or re-calculate if needed, but updating product doesn't change supplier
+        supplier_name=None,
     )

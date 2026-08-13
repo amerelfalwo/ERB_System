@@ -11,7 +11,7 @@ def test_profit_report(db, party_supplier, party_client, product, dec):
                 product_id=product.id,
                 quantity=dec("10"),
                 purchase_price=dec("5.00"),
-                selling_price=dec("8.00"),
+                sell_price=dec("8.00"),
             )
         ],
     )

@@ -11,11 +11,13 @@ from app.repositories.base import PartyRepository
 from app.schemas.party import PartyCreate, PartyOut, PartyUpdate
 from app.services.payments import get_party_balance, get_parties_balances
 
+from app.core.cache import get_cache, set_cache, invalidate_tenant_cache
+
 router = APIRouter(prefix="/parties", tags=["parties"])
 
 
 @router.post("", response_model=PartyOut)
-def create_party(
+async def create_party(
     data: PartyCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -32,16 +34,23 @@ def create_party(
     db.commit()
     db.refresh(party)
     party.calculated_balance = party.initial_balance
+
+    await invalidate_tenant_cache(current_user.tenant_id, ["parties", "reports:party-profits", "dashboard"])
     return party
 
 
 @router.get("", response_model=list[PartyOut])
-def list_parties(
+async def list_parties(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    cache_key = f"parties:list:all:{skip}:{limit}"
+    cached = await get_cache(current_user.tenant_id, cache_key)
+    if cached is not None:
+        return cached
+
     party_repo = PartyRepository(db, current_user.tenant_id)
     parties = party_repo.list(skip=skip, limit=limit)
     if parties:
@@ -49,6 +58,9 @@ def list_parties(
         balances = get_parties_balances(db, party_ids, current_user.tenant_id)
         for p in parties:
             p.calculated_balance = balances.get(p.id, Decimal("0"))
+
+    res_dict = [PartyOut.model_validate(p).model_dump(mode="json") for p in parties] if parties else []
+    await set_cache(current_user.tenant_id, cache_key, res_dict, ttl=300)
     return parties
 
 
@@ -63,12 +75,17 @@ def list_parties_select(
 
 
 @router.get("/suppliers", response_model=list[PartyOut])
-def list_suppliers(
+async def list_suppliers(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    cache_key = f"parties:list:suppliers:{skip}:{limit}"
+    cached = await get_cache(current_user.tenant_id, cache_key)
+    if cached is not None:
+        return cached
+
     parties = db.execute(
         select(Party).where(
             Party.tenant_id == current_user.tenant_id,
@@ -80,11 +97,14 @@ def list_suppliers(
         balances = get_parties_balances(db, party_ids, current_user.tenant_id)
         for p in parties:
             p.calculated_balance = balances.get(p.id, Decimal("0"))
+            
+    res_dict = [PartyOut.model_validate(p).model_dump(mode="json") for p in parties] if parties else []
+    await set_cache(current_user.tenant_id, cache_key, res_dict, ttl=300)
     return parties
 
 
 @router.post("/suppliers", response_model=PartyOut)
-def create_supplier(
+async def create_supplier(
     data: PartyCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -101,8 +121,8 @@ def create_supplier(
     db.commit()
     db.refresh(party)
     party.calculated_balance = party.initial_balance
+    await invalidate_tenant_cache(current_user.tenant_id, ["parties", "reports:party-profits", "dashboard"])
     return party
-
 
 
 @router.get("/suppliers/select")
@@ -120,12 +140,17 @@ def list_suppliers_select(
 
 
 @router.get("/customers", response_model=list[PartyOut])
-def list_customers(
+async def list_customers(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    cache_key = f"parties:list:customers:{skip}:{limit}"
+    cached = await get_cache(current_user.tenant_id, cache_key)
+    if cached is not None:
+        return cached
+
     parties = db.execute(
         select(Party).where(
             Party.tenant_id == current_user.tenant_id,
@@ -137,11 +162,14 @@ def list_customers(
         balances = get_parties_balances(db, party_ids, current_user.tenant_id)
         for p in parties:
             p.calculated_balance = balances.get(p.id, Decimal("0"))
+
+    res_dict = [PartyOut.model_validate(p).model_dump(mode="json") for p in parties] if parties else []
+    await set_cache(current_user.tenant_id, cache_key, res_dict, ttl=300)
     return parties
 
 
 @router.post("/customers", response_model=PartyOut)
-def create_customer(
+async def create_customer(
     data: PartyCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -158,8 +186,8 @@ def create_customer(
     db.commit()
     db.refresh(party)
     party.calculated_balance = party.initial_balance
+    await invalidate_tenant_cache(current_user.tenant_id, ["parties", "reports:party-profits", "dashboard"])
     return party
-
 
 
 @router.get("/customers/select")
@@ -177,7 +205,7 @@ def list_customers_select(
 
 
 @router.put("/{party_id}", response_model=PartyOut)
-def update_party(
+async def update_party(
     party_id: int,
     data: PartyUpdate,
     db: Session = Depends(get_db),
@@ -201,6 +229,7 @@ def update_party(
     db.commit()
     db.refresh(party)
     party.calculated_balance = get_party_balance(db, party_id, current_user.tenant_id)
+    await invalidate_tenant_cache(current_user.tenant_id, ["parties", "reports:party-profits", "dashboard"])
     return party
 
 
@@ -221,7 +250,7 @@ def party_balance(
 
 
 @router.post("/{party_id}/payments")
-def create_party_payment(
+async def create_party_payment(
     party_id: int,
     data: dict,
     db: Session = Depends(get_db),
@@ -249,6 +278,7 @@ def create_party_payment(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    await invalidate_tenant_cache(current_user.tenant_id, ["parties", "reports:party-profits", "dashboard"])
     return party_summary(party_id, db, current_user)
 
 
@@ -442,7 +472,7 @@ def party_summary(
 
 
 @router.post("/{party_id}/stock-return")
-def stock_return(
+async def stock_return(
     party_id: int,
     data: dict,
     db: Session = Depends(get_db),
@@ -540,6 +570,7 @@ def stock_return(
             db.add(ii)
 
         db.commit()
+        await invalidate_tenant_cache(current_user.tenant_id, ["dashboard", "reports:profit", "reports:inventory", "reports:party-profits", "parties"])
     except HTTPException:
         db.rollback()
         raise
@@ -551,7 +582,7 @@ def stock_return(
 
 
 @router.delete("/{party_id}")
-def delete_party(
+async def delete_party(
     party_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -574,11 +605,12 @@ def delete_party(
         raise HTTPException(status_code=400, detail="لا يمكن حذف الطرف لوجود فواتير او دفعات")
     db.delete(party)
     db.commit()
+    await invalidate_tenant_cache(current_user.tenant_id, ["parties", "reports:party-profits", "dashboard"])
     return {"status": "deleted"}
 
 
 @router.patch("/{party_id}/payments/{payment_id}")
-def update_party_payment(
+async def update_party_payment(
     party_id: int,
     payment_id: int,
     data: dict,
@@ -608,11 +640,12 @@ def update_party_payment(
 
     db.commit()
     db.refresh(party)
+    await invalidate_tenant_cache(current_user.tenant_id, ["parties", "reports:party-profits", "dashboard"])
     return party_summary(party_id, db, current_user)
 
 
 @router.delete("/{party_id}/payments/{payment_id}")
-def delete_party_payment(
+async def delete_party_payment(
     party_id: int,
     payment_id: int,
     db: Session = Depends(get_db),
@@ -634,4 +667,5 @@ def delete_party_payment(
     db.delete(payment)
     db.commit()
     db.refresh(party)
+    await invalidate_tenant_cache(current_user.tenant_id, ["parties", "reports:party-profits", "dashboard"])
     return party_summary(party_id, db, current_user)
