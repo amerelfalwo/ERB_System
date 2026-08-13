@@ -15,7 +15,7 @@ from app.core.constants import (
     INVOICE_TYPE_SELL, INVOICE_TYPE_PURCHASE, INVOICE_TYPE_SELL_RETURN,
     INVOICE_TYPE_PURCHASE_RETURN, STATUS_PAID, STATUS_PARTIAL, STATUS_UNPAID,
 )
-from app.models.domain import Invoice, InvoiceItem, InvoiceType, Payment, Product, StockBatch
+from app.models.domain import Invoice, InvoiceItem, InvoiceType, Party, Payment, Product, StockBatch
 from app.repositories.base import BatchRepository, InvoiceRepository, PartyRepository
 from app.schemas.invoice import InvoiceCreatePurchase, InvoiceCreateSell
 
