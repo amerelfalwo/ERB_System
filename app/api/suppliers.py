@@ -9,6 +9,7 @@ from app.core.deps import get_current_user
 from app.models.domain import Invoice, InvoiceItem, InvoiceType, Party, PartyType, Payment, Product, StockBatch, User
 from app.schemas.party import SupplierCreate, SupplierUpdate, PartyOut
 from app.services.payments import get_party_balance, get_parties_balances
+from app.core.cache import invalidate_tenant_cache_sync
 
 router = APIRouter(prefix="/suppliers", tags=["suppliers"])
 
@@ -482,6 +483,7 @@ def supplier_stock_return(
             ))
 
         db.commit()
+        invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
     except HTTPException:
         db.rollback()
         raise

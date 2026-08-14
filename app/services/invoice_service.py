@@ -844,6 +844,7 @@ def process_return_svc(
         # ─────────────────────────────────────────────────────────────────────
 
         invoice_repo.commit()
+        invalidate_tenant_cache_sync(tenant_id, ["dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
     except Exception:
         invoice_repo.rollback()
         raise

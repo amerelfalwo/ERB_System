@@ -569,6 +569,21 @@ async def stock_return(
             )
             db.add(ii)
 
+        # Auto-create a negative payment to offset the return amount
+        total_paid_on_party = db.execute(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(
+                Payment.party_id == party_id,
+            )
+        ).scalar_one()
+        total_paid_on_party = Decimal(str(total_paid_on_party))
+        if total_paid_on_party > Decimal("0"):
+            offset_amount = min(total_return, total_paid_on_party)
+            db.add(Payment(
+                party_id=party_id,
+                invoice_id=return_invoice.id,
+                amount=-offset_amount,
+            ))
+
         db.commit()
         await invalidate_tenant_cache(current_user.tenant_id, ["dashboard", "reports:profit", "reports:inventory", "reports:party-profits", "parties"])
     except HTTPException:
