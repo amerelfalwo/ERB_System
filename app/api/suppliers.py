@@ -163,13 +163,10 @@ def supplier_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    party = db.execute(
-        select(Party).where(
-            Party.id == supplier_id, 
-            Party.tenant_id == current_user.tenant_id,
-            Party.party_type == PartyType.SUPPLIER
-        )
-    ).scalar_one_or_none()
+    party_stmt = select(Party).where(Party.id == supplier_id, Party.party_type == PartyType.SUPPLIER)
+    if current_user and current_user.tenant_id is not None:
+        party_stmt = party_stmt.where(Party.tenant_id == current_user.tenant_id)
+    party = db.execute(party_stmt).scalar_one_or_none()
     if not party:
         raise HTTPException(status_code=404, detail="Supplier not found")
 
@@ -258,6 +255,8 @@ def supplier_summary(
             "paid_amount": float(inv_paid),
             "balance": float(inv_balance),
             "delivery_fee": float(inv.delivery_fee or 0),
+            "discount_amount": float(inv.discount_amount or inv.total_discount or 0),
+            "total_discount": float(inv.total_discount or inv.discount_amount or 0),
             "status": status,
             "invoice_profit": float(inv_profit),
             "created_at": inv.created_at.isoformat() if inv.created_at else None,
@@ -277,44 +276,69 @@ def supplier_summary(
             ],
         })
 
-    product_map = {}
-    for inv in invoices:
-        if inv.invoice_type == InvoiceType.PURCHASE:
-            for item in inv.items:
-                if item.batch and item.batch.product_id:
-                    pid = item.batch.product_id
-                    if pid not in product_map:
-                        product_map[pid] = {
-                            "id": pid,
-                            "name": item.batch.product.name if item.batch.product else f"Product {pid}",
-                            "remaining_stock": Decimal("0"),
-                            "last_purchase_price": item.batch.product.last_purchase_price if item.batch.product else item.purchase_price
-                        }
-                    product_map[pid]["remaining_stock"] += (item.batch.remaining_quantity if item.batch.remaining_quantity is not None else Decimal("0"))
+    # Fetch all available stock batches belonging to this supplier (including customer return batches)
+    batch_filter = [
+        StockBatch.party_id == supplier_id,
+        StockBatch.remaining_quantity > 0
+    ]
+    if current_user and current_user.tenant_id is not None:
+        batch_filter.append(StockBatch.tenant_id == current_user.tenant_id)
 
-    product_ids = list(product_map.keys())
+    supplier_batch_rows = db.execute(
+        select(
+            Product.id.label("product_id"),
+            Product.name.label("product_name"),
+            Product.last_purchase_price,
+            func.coalesce(func.sum(StockBatch.remaining_quantity), 0).label("supplier_stock")
+        )
+        .join(Product, Product.id == StockBatch.product_id)
+        .where(*batch_filter)
+        .group_by(Product.id, Product.name, Product.last_purchase_price)
+    ).all()
+
+    product_ids = [r.product_id for r in supplier_batch_rows]
     stock_map = {}
+    supplier_latest_prices = {}
     if product_ids:
+        stock_filter = [
+            StockBatch.product_id.in_(product_ids),
+            StockBatch.remaining_quantity > 0
+        ]
+        latest_filter = [
+            StockBatch.party_id == supplier_id,
+            StockBatch.product_id.in_(product_ids),
+        ]
+        if current_user and current_user.tenant_id is not None:
+            stock_filter.append(StockBatch.tenant_id == current_user.tenant_id)
+            latest_filter.append(StockBatch.tenant_id == current_user.tenant_id)
+
         stock_sums = db.execute(
             select(StockBatch.product_id, func.coalesce(func.sum(StockBatch.remaining_quantity), 0))
-            .where(
-                StockBatch.product_id.in_(product_ids), 
-                StockBatch.tenant_id == current_user.tenant_id
-            )
+            .where(*stock_filter)
             .group_by(StockBatch.product_id)
         ).all()
         stock_map = {pid: qty for pid, qty in stock_sums}
 
+        latest_batches = db.execute(
+            select(StockBatch.product_id, StockBatch.purchase_price)
+            .where(*latest_filter)
+            .order_by(StockBatch.created_at.desc())
+        ).all()
+        for pid, p_price in latest_batches:
+            if pid not in supplier_latest_prices:
+                supplier_latest_prices[pid] = p_price
+
     product_summary = []
-    for pid, data in product_map.items():
-        if data["remaining_stock"] > 0:
-            product_summary.append({
-                "id": data["id"],
-                "name": data["name"],
-                "supplier_stock": float(data["remaining_stock"]),
-                "remaining_stock": float(stock_map.get(pid, 0)),
-                "last_purchase_price": float(data["last_purchase_price"] or 0),
-            })
+    for r in supplier_batch_rows:
+        pid = r.product_id
+        supp_price = supplier_latest_prices.get(pid) or r.last_purchase_price
+        product_summary.append({
+            "id": pid,
+            "name": r.product_name,
+            "supplier_stock": float(r.supplier_stock),
+            "remaining_stock": float(stock_map.get(pid, Decimal("0"))),
+            "last_purchase_price": float(supp_price or 0),
+        })
 
     total_profit = Decimal("0")
 
@@ -467,23 +491,8 @@ def supplier_stock_return(
             )
             db.add(ii)
 
-        # Auto-create a negative payment to offset the return amount
-        total_paid_on_party = db.execute(
-            select(func.coalesce(func.sum(Payment.amount), 0)).where(
-                Payment.party_id == supplier_id,
-            )
-        ).scalar_one()
-        total_paid_on_party = Decimal(str(total_paid_on_party))
-        if total_paid_on_party > Decimal("0"):
-            offset_amount = min(total_return, total_paid_on_party)
-            db.add(Payment(
-                party_id=supplier_id,
-                invoice_id=return_invoice.id,
-                amount=-offset_amount,
-            ))
-
         db.commit()
-        invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
+        invalidate_tenant_cache_sync(current_user.tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
     except HTTPException:
         db.rollback()
         raise

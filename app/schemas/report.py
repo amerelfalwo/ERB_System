@@ -1,5 +1,5 @@
 from decimal import Decimal
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -83,12 +83,21 @@ class NetProfitReportOut(BaseModel):
 
 class DashboardKpis(BaseModel):
     total_sales: Decimal
+    net_product_sales: Optional[Decimal] = Decimal("0")
+    total_discounts: Optional[Decimal] = Decimal("0")
+    delivery_revenue: Optional[Decimal] = Decimal("0")
+    cogs: Optional[Decimal] = Decimal("0")
     total_purchases: Decimal
     gross_profit: Decimal
     total_expenses: Decimal
     net_profit: Decimal
     total_invoices_count: int
     outstanding_balance: Decimal
+    total_inventory_value: Optional[Decimal] = Decimal("0")
+    customer_receivables: Optional[Decimal] = Decimal("0")
+    supplier_payables: Optional[Decimal] = Decimal("0")
+    customer_credits: Optional[Decimal] = Decimal("0")
+    supplier_credits: Optional[Decimal] = Decimal("0")
 
 class DashboardTrendPoint(BaseModel):
     period: str

@@ -100,9 +100,18 @@ async def party_profits(
 ):
     cache_key = "reports:party-profits"
     cached = await get_cache(current_user.tenant_id, cache_key)
-    if cached is not None:
-        return cached
     result = party_profit_summary(db, current_user.tenant_id)
     res_dict = [r.model_dump() if hasattr(r, "model_dump") else (r.dict() if hasattr(r, "dict") else r) for r in result] if isinstance(result, list) else result
     await set_cache(current_user.tenant_id, cache_key, res_dict, ttl=600)
     return result
+
+
+@router.get("/stock-ledger/{product_id}")
+def stock_ledger(
+    product_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.services.stock_ledger import get_product_stock_ledger
+    return get_product_stock_ledger(db, product_id, current_user.tenant_id)
+

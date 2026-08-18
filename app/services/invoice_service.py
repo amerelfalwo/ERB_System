@@ -277,7 +277,7 @@ def create_purchase_invoice_svc(
 
         invoice_repo.commit()
         invoice_repo.refresh(invoice)
-        invalidate_tenant_cache_sync(tenant_id, ["dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
+        invalidate_tenant_cache_sync(tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
         logger.info("Purchase invoice #%s created successfully. Batches: %s. Total: %s",
                     invoice.id, batches_created, invoice.total_amount)
         return invoice
@@ -390,6 +390,7 @@ def create_sell_invoice_svc(
 
         invoice_repo.commit()
         invoice_repo.refresh(invoice)
+        invalidate_tenant_cache_sync(tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
         return invoice
     except Exception:
         invoice_repo.rollback()
@@ -582,7 +583,7 @@ def update_invoice_svc(
             invoice.notes = data.get("notes")
 
         invoice_repo.commit()
-        invalidate_tenant_cache_sync(tenant_id, ["dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
+        invalidate_tenant_cache_sync(tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
     except Exception:
         invoice_repo.rollback()
         raise
@@ -683,7 +684,7 @@ def delete_invoice_svc(
 
         invoice_repo.delete(invoice)
         invoice_repo.commit()
-        invalidate_tenant_cache_sync(tenant_id, ["dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
+        invalidate_tenant_cache_sync(tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
     except Exception:
         invoice_repo.rollback()
         raise
@@ -773,6 +774,13 @@ def process_return_svc(
             orig_batch = batch_repo.get_by_id(orig_item.batch_id)
 
             if return_type == INVOICE_TYPE_SELL_RETURN:
+                orig_subtotal = orig_invoice.subtotal or sum((i.quantity or Decimal("0")) * (i.unit_price or Decimal("0")) for i in orig_invoice.items) or Decimal("0")
+                orig_disc = getattr(orig_invoice, "total_discount", None) or getattr(orig_invoice, "discount_amount", None) or Decimal("0")
+                net_items_total = orig_subtotal - orig_disc
+                net_factor = net_items_total / orig_subtotal if orig_subtotal > Decimal("0") else Decimal("1")
+
+                return_unit_price = orig_item.unit_price * net_factor
+
                 new_batch = StockBatch(
                     tenant_id=tenant_id,
                     product_id=orig_batch.product_id,
@@ -785,7 +793,6 @@ def process_return_svc(
                 batch_repo.add(new_batch)
                 batch_repo.flush()
                 
-                return_unit_price = orig_item.unit_price
                 new_ii = InvoiceItem(
                     invoice_id=return_invoice.id, batch_id=new_batch.id,
                     original_invoice_item_id=orig_item_id,
@@ -819,32 +826,12 @@ def process_return_svc(
         if total_return == Decimal("0"):
             raise HTTPException(status_code=400, detail=ERR_NO_VALID_RETURN_ITEMS)
 
+        return_invoice.subtotal = total_return
+        return_invoice.delivery_fee = Decimal("0")
         return_invoice.total_amount = total_return
 
-        # ── Auto-create a negative payment to offset the return value ────────
-        # This ensures the party balance is correctly reduced when a return is
-        # processed: if the customer/supplier already paid, the return cancels
-        # the corresponding portion of that payment so the net balance stays accurate.
-        total_paid_on_party = invoice_repo._db.execute(
-            select(func.coalesce(func.sum(Payment.amount), Decimal("0"))).where(
-                Payment.party_id == orig_invoice.party_id
-            )
-        ).scalar_one()
-        total_paid_on_party = Decimal(str(total_paid_on_party))
-
-        if total_paid_on_party > Decimal("0"):
-            # Negative payment capped at what was actually paid
-            offset_amount = min(total_return, total_paid_on_party)
-            negative_payment = Payment(
-                party_id=orig_invoice.party_id,
-                invoice_id=return_invoice.id,
-                amount=-offset_amount,
-            )
-            invoice_repo.add(negative_payment)
-        # ─────────────────────────────────────────────────────────────────────
-
         invoice_repo.commit()
-        invalidate_tenant_cache_sync(tenant_id, ["dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
+        invalidate_tenant_cache_sync(tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
     except Exception:
         invoice_repo.rollback()
         raise

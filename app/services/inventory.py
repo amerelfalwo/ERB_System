@@ -206,7 +206,11 @@ def create_sell_invoice(db: Session, data: InvoiceCreateSell, tenant_id: int = N
                 db.add(invoice_item)
                 total += effective_price * qty
 
-        invoice.total_amount = total + data.delivery_fee
+        disc = data.discount_amount if data.discount_amount is not None and data.discount_amount > 0 else (data.total_discount or Decimal("0"))
+        invoice.subtotal = total
+        invoice.discount_amount = disc
+        invoice.total_discount = disc
+        invoice.total_amount = total - disc + (data.total_tax or Decimal("0")) + data.delivery_fee
         if data.amount_paid > 0:
             payment = Payment(party_id=data.party_id, invoice_id=invoice.id, amount=data.amount_paid)
             db.add(payment)

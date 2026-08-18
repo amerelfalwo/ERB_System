@@ -4,7 +4,7 @@ from typing import List
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.domain import Invoice, InvoiceItem, InvoiceType, Payment, Product, StockBatch, Party
+from app.models.domain import Invoice, InvoiceItem, InvoiceType, Payment, Product, StockBatch, Party, PartyType
 from app.schemas.report import (
     InventoryBatchOut,
     InventoryProductOut,
@@ -487,17 +487,79 @@ def unified_dashboard_report(db: Session, tenant_id: int, date_from: str = None,
     total_expenses = net_report.total_expenses
     net_profit = net_report.net_profit
 
-    dash_analytics = dashboard_analytics(db, tenant_id, date_from, date_to)
-    outstanding_balance = dash_analytics.customer_receivables
+    # 1.1 Total Inventory Value (at cost price)
+    if tenant_id is None:
+        tot_inv_val = db.execute(
+            select(func.coalesce(func.sum(StockBatch.remaining_quantity * StockBatch.purchase_price), 0))
+            .where(StockBatch.remaining_quantity > 0)
+        ).scalar_one()
+        parties = db.execute(select(Party.id, Party.party_type)).all()
+    else:
+        tot_inv_val = db.execute(
+            select(func.coalesce(func.sum(StockBatch.remaining_quantity * StockBatch.purchase_price), 0))
+            .where(
+                StockBatch.tenant_id == tenant_id,
+                StockBatch.remaining_quantity > 0
+            )
+        ).scalar_one()
+        parties = db.execute(
+            select(Party.id, Party.party_type).where(Party.tenant_id == tenant_id)
+        ).all()
+    total_inventory_value = Decimal(str(tot_inv_val))
+
+    party_ids = [p.id for p in parties]
+    party_type_map = {p.id: p.party_type for p in parties}
+    
+    from app.services.payments import get_parties_balances
+    party_balances = get_parties_balances(db, party_ids, tenant_id=tenant_id)
+    
+    customer_receivables = Decimal("0")
+    customer_credits = Decimal("0")
+    supplier_payables = Decimal("0")
+    supplier_credits = Decimal("0")
+    
+    for pid, bal in party_balances.items():
+        ptype = party_type_map.get(pid)
+        if ptype == PartyType.CLIENT:
+            if bal > 0:
+                customer_receivables += bal
+            elif bal < 0:
+                customer_credits += abs(bal)
+        elif ptype == PartyType.SUPPLIER:
+            if bal > 0:
+                supplier_payables += bal
+            elif bal < 0:
+                supplier_credits += abs(bal)
+
+    delivery_revenue = Decimal("0")
+    total_discounts = Decimal("0")
+    for inv in invoices:
+        if inv.invoice_type == InvoiceType.SELL:
+            delivery_revenue += Decimal(str(inv.delivery_fee or 0))
+            total_discounts += Decimal(str(inv.discount_amount or inv.total_discount or 0))
+
+    net_product_sales = total_sales - delivery_revenue
+    cogs = net_product_sales - gross_profit
+
+    outstanding_balance = customer_receivables
 
     kpis = DashboardKpis(
         total_sales=total_sales,
+        net_product_sales=net_product_sales,
+        total_discounts=total_discounts,
+        delivery_revenue=delivery_revenue,
+        cogs=cogs,
         total_purchases=total_purchases,
         gross_profit=gross_profit,
         total_expenses=total_expenses,
         net_profit=net_profit,
         total_invoices_count=total_invoices_count,
-        outstanding_balance=outstanding_balance
+        outstanding_balance=outstanding_balance,
+        total_inventory_value=total_inventory_value,
+        customer_receivables=customer_receivables,
+        supplier_payables=supplier_payables,
+        customer_credits=customer_credits,
+        supplier_credits=supplier_credits,
     )
 
     # 2. Trend (Period grouping)
@@ -542,35 +604,48 @@ def unified_dashboard_report(db: Session, tenant_id: int, date_from: str = None,
         ) for pk in sorted_periods
     ]
 
-    # 3. Top Products
-    top_prod_query = (
+    # 3. Top Products (Net of SELL and SELL_RETURN)
+    prod_items_query = (
         select(
             Product.name.label("product_name"),
-            func.coalesce(func.sum(InvoiceItem.quantity), 0).label("qty_sold"),
+            Invoice.invoice_type,
+            func.coalesce(func.sum(InvoiceItem.quantity), 0).label("qty"),
             func.coalesce(func.sum(InvoiceItem.quantity * func.coalesce(InvoiceItem.sell_price, InvoiceItem.unit_price)), 0).label("revenue")
         )
         .join(StockBatch, StockBatch.id == InvoiceItem.batch_id)
         .join(Product, Product.id == StockBatch.product_id)
         .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
-        .where(Invoice.tenant_id == tenant_id, Invoice.invoice_type == InvoiceType.SELL)
+        .where(
+            Invoice.tenant_id == tenant_id,
+            Invoice.invoice_type.in_([InvoiceType.SELL, InvoiceType.SELL_RETURN])
+        )
     )
     if dt_start:
-        top_prod_query = top_prod_query.where(Invoice.created_at >= dt_start)
+        prod_items_query = prod_items_query.where(Invoice.created_at >= dt_start)
     if dt_end:
-        top_prod_query = top_prod_query.where(Invoice.created_at <= dt_end)
+        prod_items_query = prod_items_query.where(Invoice.created_at <= dt_end)
 
-    top_prod_rows = db.execute(
-        top_prod_query.group_by(Product.id, Product.name)
-        .order_by(func.sum(InvoiceItem.quantity * func.coalesce(InvoiceItem.sell_price, InvoiceItem.unit_price)).desc())
-        .limit(5)
-    ).all()
+    prod_rows = db.execute(prod_items_query.group_by(Product.id, Product.name, Invoice.invoice_type)).all()
 
+    top_prod_map = defaultdict(lambda: {"qty": Decimal("0"), "revenue": Decimal("0")})
+    for r in prod_rows:
+        pname = r.product_name
+        q = Decimal(str(r.qty))
+        rev = Decimal(str(r.revenue))
+        if r.invoice_type == InvoiceType.SELL:
+            top_prod_map[pname]["qty"] += q
+            top_prod_map[pname]["revenue"] += rev
+        elif r.invoice_type == InvoiceType.SELL_RETURN:
+            top_prod_map[pname]["qty"] -= q
+            top_prod_map[pname]["revenue"] -= rev
+
+    sorted_prods = sorted(top_prod_map.items(), key=lambda x: x[1]["revenue"], reverse=True)[:5]
     top_products = [
         TopProductItem(
-            product_name=row.product_name,
-            qty_sold=Decimal(str(row.qty_sold)),
-            revenue=Decimal(str(row.revenue))
-        ) for row in top_prod_rows
+            product_name=pname,
+            qty_sold=max(Decimal("0"), data["qty"]),
+            revenue=max(Decimal("0"), data["revenue"])
+        ) for pname, data in sorted_prods
     ]
 
     # 4. Low Stock Products
@@ -605,33 +680,43 @@ def unified_dashboard_report(db: Session, tenant_id: int, date_from: str = None,
         ) for row in low_stock_rows
     ]
 
-    # 5. Top Parties
-    top_party_query = (
+    # 5. Top Parties (Net of SELL/PURCHASE minus RETURNS)
+    party_inv_query = (
         select(
+            Party.id.label("party_id"),
             Party.name.label("party_name"),
             Party.party_type.label("party_type"),
+            Invoice.invoice_type,
             func.coalesce(func.sum(Invoice.total_amount), 0).label("total_amount")
         )
         .join(Party, Party.id == Invoice.party_id)
         .where(Invoice.tenant_id == tenant_id)
     )
     if dt_start:
-        top_party_query = top_party_query.where(Invoice.created_at >= dt_start)
+        party_inv_query = party_inv_query.where(Invoice.created_at >= dt_start)
     if dt_end:
-        top_party_query = top_party_query.where(Invoice.created_at <= dt_end)
+        party_inv_query = party_inv_query.where(Invoice.created_at <= dt_end)
 
-    top_party_rows = db.execute(
-        top_party_query.group_by(Party.id, Party.name, Party.party_type)
-        .order_by(func.sum(Invoice.total_amount).desc())
-        .limit(5)
-    ).all()
+    party_rows = db.execute(party_inv_query.group_by(Party.id, Party.name, Party.party_type, Invoice.invoice_type)).all()
 
+    top_party_map = defaultdict(lambda: {"name": "", "type": "", "total": Decimal("0")})
+    for r in party_rows:
+        pid = r.party_id
+        top_party_map[pid]["name"] = r.party_name
+        top_party_map[pid]["type"] = str(r.party_type.value if hasattr(r.party_type, "value") else r.party_type).upper()
+        amt = Decimal(str(r.total_amount))
+        if r.invoice_type in [InvoiceType.SELL, InvoiceType.PURCHASE]:
+            top_party_map[pid]["total"] += amt
+        elif r.invoice_type in [InvoiceType.SELL_RETURN, InvoiceType.PURCHASE_RETURN]:
+            top_party_map[pid]["total"] -= amt
+
+    sorted_parties = sorted(top_party_map.values(), key=lambda x: x["total"], reverse=True)[:5]
     top_parties = [
         TopPartyItem(
-            party_name=row.party_name,
-            type=str(row.party_type.value if hasattr(row.party_type, "value") else row.party_type).upper(),
-            total_amount=Decimal(str(row.total_amount))
-        ) for row in top_party_rows
+            party_name=pdata["name"],
+            type=pdata["type"],
+            total_amount=max(Decimal("0"), pdata["total"])
+        ) for pdata in sorted_parties
     ]
 
     return UnifiedDashboardOut(

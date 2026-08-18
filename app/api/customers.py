@@ -308,6 +308,8 @@ def customer_summary(
             "paid_amount": float(inv_paid),
             "balance": float(inv_balance),
             "delivery_fee": float(inv.delivery_fee or 0),
+            "discount_amount": float(inv.discount_amount or inv.total_discount or 0),
+            "total_discount": float(inv.total_discount or inv.discount_amount or 0),
             "status": status,
             "invoice_profit": float(inv_profit),
             "created_at": inv.created_at.isoformat() if inv.created_at else None,
@@ -499,23 +501,8 @@ def customer_stock_return(
             )
             db.add(ii)
 
-        # Auto-create a negative payment to offset the return amount
-        total_paid_on_party = db.execute(
-            select(func.coalesce(func.sum(Payment.amount), 0)).where(
-                Payment.party_id == customer_id,
-            )
-        ).scalar_one()
-        total_paid_on_party = Decimal(str(total_paid_on_party))
-        if total_paid_on_party > Decimal("0"):
-            offset_amount = min(total_return, total_paid_on_party)
-            db.add(Payment(
-                party_id=customer_id,
-                invoice_id=return_invoice.id,
-                amount=-offset_amount,
-            ))
-
         db.commit()
-        invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
+        invalidate_tenant_cache_sync(current_user.tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
     except HTTPException:
         db.rollback()
         raise
