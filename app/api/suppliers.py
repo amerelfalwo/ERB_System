@@ -142,7 +142,7 @@ def create_supplier_payment(
     if amount_paid == 0:
         raise HTTPException(status_code=400, detail="Invalid payment amount")
 
-    notes = data.get("notes")
+    notes = data.get("notes") or data.get("note") or data.get("comments") or data.get("comment")
 
     from app.services.payments import create_payment
     from app.schemas.payment import PaymentCreate
@@ -595,6 +595,8 @@ def update_supplier_payment(
         raise HTTPException(status_code=400, detail="Invalid payment amount")
 
     payment.amount = new_amount
+    if "notes" in data or "note" in data:
+        payment.notes = data.get("notes") if "notes" in data else data.get("note")
     if "payment_date" in data:
         payment.payment_date = data["payment_date"]
 
