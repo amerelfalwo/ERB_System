@@ -266,13 +266,15 @@ async def create_party_payment(
     if amount_paid == 0:
         raise HTTPException(status_code=400, detail="Invalid payment amount")
 
+    notes = data.get("notes")
+
     from app.services.payments import create_payment
     from app.schemas.payment import PaymentCreate
     
     try:
         create_payment(
             db=db,
-            data=PaymentCreate(party_id=party.id, amount=amount_paid),
+            data=PaymentCreate(party_id=party.id, amount=amount_paid, notes=notes),
             tenant_id=current_user.tenant_id
         )
     except ValueError as e:
@@ -335,6 +337,7 @@ def party_summary(
             "id": p.id,
             "invoice_id": p.invoice_id,
             "amount": float(p.amount),
+            "notes": p.notes,
             "payment_date": p.payment_date.isoformat() if p.payment_date else None,
         })
 

@@ -113,6 +113,7 @@ def create_payment(db: Session, data: PaymentCreate, tenant_id: int = None) -> P
         party_id=party_id,
         invoice_id=data.invoice_id,
         amount=data.amount,
+        notes=data.notes,
     )
     db.add(payment)
     db.commit()

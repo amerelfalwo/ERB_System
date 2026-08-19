@@ -9,6 +9,7 @@ class PaymentCreate(BaseModel):
     party_id: Optional[int] = None
     amount: Decimal
     invoice_id: Optional[int] = None
+    notes: Optional[str] = None
 
 
 class PaymentOut(BaseModel):
@@ -16,6 +17,7 @@ class PaymentOut(BaseModel):
     party_id: int
     invoice_id: Optional[int]
     amount: Decimal
+    notes: Optional[str] = None
     payment_date: datetime
 
     model_config = ConfigDict(from_attributes=True)

@@ -74,12 +74,6 @@ def profit_report(db: Session, tenant_id: int = None, start_date: str = None, en
     invoices = db.execute(inv_stmt).scalars().all()
     
     total_profit = Decimal("0")
-    for inv in invoices:
-        disc = Decimal(str(inv.discount_amount or inv.total_discount or 0))
-        if inv.invoice_type == InvoiceType.SELL_RETURN:
-            total_profit += disc
-        else:
-            total_profit -= disc
 
     # 2. Fetch items for COGS and revenue logic
     stmt = select(InvoiceItem, StockBatch, Invoice).join(
@@ -120,20 +114,33 @@ def profit_report(db: Session, tenant_id: int = None, start_date: str = None, en
             )
         )
 
-    return ProfitReportOut(total_profit=total_profit, items=items)
+    party_profits_list = party_profit_summary(db, tenant_id, start_date, end_date)
+    final_total_profit = sum(p["total_profit"] for p in party_profits_list) if party_profits_list else total_profit
+
+    return ProfitReportOut(total_profit=final_total_profit, items=items)
 
 
-def party_profit_summary(db: Session, tenant_id: int) -> list:
-    rows = db.execute(
-        select(Invoice.id, Invoice.invoice_type, Invoice.delivery_fee, Invoice.discount_amount, Invoice.total_discount,
-               Party.id.label("party_id"), Party.name.label("party_name"))
-        .join(Party, Party.id == Invoice.party_id)
-        .where(
-            Invoice.invoice_type.in_([InvoiceType.SELL, InvoiceType.SELL_RETURN]),
-            Invoice.tenant_id == tenant_id,
-            Party.tenant_id == tenant_id,
-        )
-    ).all()
+def party_profit_summary(db: Session, tenant_id: int, start_date: str = None, end_date: str = None) -> list:
+    from datetime import datetime
+
+    dt_start = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
+    dt_end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59) if end_date else None
+
+    stmt = select(
+        Invoice.id, Invoice.invoice_type, Invoice.delivery_fee, Invoice.discount_amount, Invoice.total_discount,
+        Party.id.label("party_id"), Party.name.label("party_name")
+    ).join(Party, Party.id == Invoice.party_id).where(
+        Invoice.invoice_type.in_([InvoiceType.SELL, InvoiceType.SELL_RETURN]),
+        Party.tenant_id == tenant_id,
+    )
+    if tenant_id is not None:
+        stmt = stmt.where(Invoice.tenant_id == tenant_id)
+    if dt_start:
+        stmt = stmt.where(Invoice.created_at >= dt_start)
+    if dt_end:
+        stmt = stmt.where(Invoice.created_at <= dt_end)
+
+    rows = db.execute(stmt).all()
 
     invoice_ids = [r.id for r in rows]
     invoice_meta = {r.id: (r.party_id, r.party_name, r.invoice_type, Decimal(str(r.delivery_fee or 0)), Decimal(str(r.discount_amount or r.total_discount or 0))) for r in rows}
@@ -145,12 +152,6 @@ def party_profit_summary(db: Session, tenant_id: int) -> list:
             party_data[party_id] = {"name": party_name, "profit": Decimal("0"), "revenue": Decimal("0"), "invoices": set()}
             
         party_data[party_id]["invoices"].add(inv_id)
-        if inv_type == InvoiceType.SELL_RETURN:
-            party_data[party_id]["profit"] += discount_amount
-            party_data[party_id]["revenue"] -= (delivery_fee - discount_amount)
-        else:
-            party_data[party_id]["profit"] -= discount_amount
-            party_data[party_id]["revenue"] += (delivery_fee - discount_amount)
 
     if not invoice_ids:
         return []
@@ -532,23 +533,66 @@ def unified_dashboard_report(db: Session, tenant_id: int, date_from: str = None,
                 supplier_credits += abs(bal)
 
     delivery_revenue = Decimal("0")
+    delivery_total_sales = Decimal("0")
+    delivery_total_purchases = Decimal("0")
     total_discounts = Decimal("0")
     for inv in invoices:
+        fee = Decimal(str(inv.delivery_fee or 0))
+        disc = Decimal(str(inv.discount_amount or inv.total_discount or 0))
         if inv.invoice_type == InvoiceType.SELL:
-            delivery_revenue += Decimal(str(inv.delivery_fee or 0))
-            total_discounts += Decimal(str(inv.discount_amount or inv.total_discount or 0))
+            delivery_revenue += fee
+            delivery_total_sales += fee
+            total_discounts += disc
+        elif inv.invoice_type == InvoiceType.SELL_RETURN:
+            delivery_revenue -= fee
+            delivery_total_sales -= fee
+            total_discounts -= disc
+        elif inv.invoice_type == InvoiceType.PURCHASE:
+            delivery_total_purchases += fee
+        elif inv.invoice_type == InvoiceType.PURCHASE_RETURN:
+            delivery_total_purchases -= fee
 
-    net_product_sales = total_sales - delivery_revenue
-    cogs = net_product_sales - gross_profit
+    # Calculate actual COGS directly from sold items batch purchase price (FIFO)
+    stmt = select(InvoiceItem, StockBatch, Invoice).join(
+        StockBatch, StockBatch.id == InvoiceItem.batch_id
+    ).join(Invoice, Invoice.id == InvoiceItem.invoice_id).where(
+        Invoice.invoice_type.in_([InvoiceType.SELL, InvoiceType.SELL_RETURN]),
+    )
+    if tenant_id is not None:
+        stmt = stmt.where(Invoice.tenant_id == tenant_id)
+    if dt_start:
+        stmt = stmt.where(Invoice.created_at >= dt_start)
+    if dt_end:
+        stmt = stmt.where(Invoice.created_at <= dt_end)
+    cogs_rows = db.execute(stmt).all()
+
+    actual_cogs = Decimal("0")
+    for invoice_item, batch, invoice in cogs_rows:
+        cost = Decimal(str(invoice_item.purchase_price if invoice_item.purchase_price is not None else (batch.purchase_price if batch and batch.purchase_price is not None else "0")))
+        qty_val = Decimal(str(invoice_item.quantity))
+        if invoice.invoice_type == InvoiceType.SELL_RETURN:
+            actual_cogs -= cost * qty_val
+        else:
+            actual_cogs += cost * qty_val
+
+    cogs = actual_cogs
+    net_product_sales = total_sales - delivery_total_sales
 
     outstanding_balance = customer_receivables
+
+    party_profits_list = party_profit_summary(db, tenant_id, date_from, date_to)
+    gross_profit = sum(p["total_profit"] for p in party_profits_list) if party_profits_list else Decimal("0")
+    net_profit = gross_profit - total_expenses
 
     kpis = DashboardKpis(
         total_sales=total_sales,
         net_product_sales=net_product_sales,
         total_discounts=total_discounts,
-        delivery_revenue=delivery_revenue,
-        cogs=cogs,
+        delivery_revenue=delivery_total_sales,
+        delivery_total_sales=delivery_total_sales,
+        delivery_total_purchases=delivery_total_purchases,
+        cogs=actual_cogs,
+        actual_cogs=actual_cogs,
         total_purchases=total_purchases,
         gross_profit=gross_profit,
         total_expenses=total_expenses,

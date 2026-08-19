@@ -95,12 +95,20 @@ def statement(
 
 @router.get("/party-profits", response_model=List[PartyProfitSummaryOut])
 async def party_profits(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    cache_key = "reports:party-profits"
+    df = date_from or start_date
+    dt = date_to or end_date
+    cache_key = f"reports:party-profits:{df or 'all'}:{dt or 'all'}"
     cached = await get_cache(current_user.tenant_id, cache_key)
-    result = party_profit_summary(db, current_user.tenant_id)
+    if cached is not None:
+        return cached
+    result = party_profit_summary(db, current_user.tenant_id, df, dt)
     res_dict = [r.model_dump() if hasattr(r, "model_dump") else (r.dict() if hasattr(r, "dict") else r) for r in result] if isinstance(result, list) else result
     await set_cache(current_user.tenant_id, cache_key, res_dict, ttl=600)
     return result

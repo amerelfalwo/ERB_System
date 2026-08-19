@@ -142,6 +142,7 @@ class Payment(Base):
     invoice_id = Column(Integer, ForeignKey("invoices.id", ondelete="CASCADE"), nullable=True, index=True)
     party_id = Column(Integer, ForeignKey("parties.id", ondelete="RESTRICT"), index=True)
     amount = Column(Numeric(12, 2))
+    notes = Column(Text, nullable=True)
     payment_date = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     invoice = relationship("Invoice", back_populates="payments")
     party = relationship("Party", back_populates="payments")

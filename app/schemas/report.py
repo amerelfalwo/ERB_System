@@ -86,7 +86,10 @@ class DashboardKpis(BaseModel):
     net_product_sales: Optional[Decimal] = Decimal("0")
     total_discounts: Optional[Decimal] = Decimal("0")
     delivery_revenue: Optional[Decimal] = Decimal("0")
+    delivery_total_sales: Optional[Decimal] = Decimal("0")
+    delivery_total_purchases: Optional[Decimal] = Decimal("0")
     cogs: Optional[Decimal] = Decimal("0")
+    actual_cogs: Optional[Decimal] = Decimal("0")
     total_purchases: Decimal
     gross_profit: Decimal
     total_expenses: Decimal
