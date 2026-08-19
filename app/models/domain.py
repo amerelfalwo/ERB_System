@@ -99,6 +99,7 @@ class Invoice(Base):
     __table_args__ = (
         Index("idx_tenant_invoice_type", "tenant_id", "invoice_type"),
         Index("idx_tenant_party_id", "tenant_id", "party_id"),
+        Index("idx_invoice_party_type_total", "party_id", "invoice_type", "total_amount"),
     )
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True)
@@ -138,6 +139,9 @@ class InvoiceItem(Base):
 
 class Payment(Base):
     __tablename__ = "payments"
+    __table_args__ = (
+        Index("idx_payment_party_amount", "party_id", "amount"),
+    )
     id = Column(Integer, primary_key=True, index=True)
     invoice_id = Column(Integer, ForeignKey("invoices.id", ondelete="CASCADE"), nullable=True, index=True)
     party_id = Column(Integer, ForeignKey("parties.id", ondelete="RESTRICT"), index=True)

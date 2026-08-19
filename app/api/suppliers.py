@@ -9,7 +9,7 @@ from app.core.deps import get_current_user
 from app.models.domain import Invoice, InvoiceItem, InvoiceType, Party, PartyType, Payment, Product, StockBatch, User
 from app.schemas.party import SupplierCreate, SupplierUpdate, PartyOut
 from app.services.payments import get_party_balance, get_parties_balances
-from app.core.cache import invalidate_tenant_cache_sync
+from app.core.cache import invalidate_tenant_cache_sync, get_cache, set_cache, delete_cache
 
 router = APIRouter(prefix="/suppliers", tags=["suppliers"])
 
@@ -32,16 +32,24 @@ def create_supplier(
     db.commit()
     db.refresh(party)
     party.calculated_balance = party.initial_balance
+    
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["suppliers_list"])
+    
     return party
 
 
 @router.get("", response_model=list[PartyOut])
-def list_suppliers(
+async def list_suppliers(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    cache_key_suffix = f"suppliers_list_{skip}_{limit}"
+    cached_data = await get_cache(current_user.tenant_id, cache_key_suffix)
+    if cached_data:
+        return cached_data if isinstance(cached_data, list) else json.loads(cached_data)
+
     parties = db.execute(
         select(Party).where(
             Party.tenant_id == current_user.tenant_id,
@@ -53,6 +61,11 @@ def list_suppliers(
         balances = get_parties_balances(db, party_ids, current_user.tenant_id)
         for p in parties:
             p.calculated_balance = balances.get(p.id, Decimal("0"))
+            
+    from fastapi.encoders import jsonable_encoder
+    result = jsonable_encoder(parties)
+    await set_cache(current_user.tenant_id, cache_key_suffix, result, ttl=60)
+    
     return parties
 
 
@@ -99,6 +112,9 @@ def update_supplier(
     db.commit()
     db.refresh(party)
     party.calculated_balance = get_party_balance(db, supplier_id, current_user.tenant_id)
+    
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["suppliers_list", "supplier_summary"])
+    
     return party
 
 
@@ -122,7 +138,7 @@ def supplier_balance(
 
 
 @router.post("/{supplier_id}/payments")
-def create_supplier_payment(
+async def create_supplier_payment(
     supplier_id: int,
     data: dict,
     db: Session = Depends(get_db),
@@ -156,15 +172,23 @@ def create_supplier_payment(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    return supplier_summary(supplier_id, db, current_user)
+    await delete_cache(current_user.tenant_id if current_user else 0, f"supplier:{supplier_id}:summary")
+    return await supplier_summary(supplier_id, db, current_user)
+
 
 
 @router.get("/{supplier_id}/summary")
-def supplier_summary(
+async def supplier_summary(
     supplier_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    tenant_id = current_user.tenant_id if current_user else 0
+    cache_key = f"supplier:{supplier_id}:summary"
+    cached = await get_cache(tenant_id, cache_key)
+    if cached:
+        return cached
+
     party_stmt = select(Party).where(Party.id == supplier_id, Party.party_type == PartyType.SUPPLIER)
     if current_user and current_user.tenant_id is not None:
         party_stmt = party_stmt.where(Party.tenant_id == current_user.tenant_id)
@@ -361,7 +385,7 @@ def supplier_summary(
         for p in payments
     ]
 
-    return {
+    result = {
         "supplier": {
             "id": party.id,
             "name": party.name,
@@ -382,10 +406,13 @@ def supplier_summary(
         "products": product_summary,
         "payments": payment_list,
     }
+    await set_cache(tenant_id, cache_key, result, ttl=60)
+    return result
+
 
 
 @router.post("/{supplier_id}/stock-return")
-def supplier_stock_return(
+async def supplier_stock_return(
     supplier_id: int,
     data: dict,
     db: Session = Depends(get_db),
@@ -500,6 +527,7 @@ def supplier_stock_return(
         db.refresh(return_invoice)
         invalidate_tenant_cache_sync(current_user.tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
 
+        await delete_cache(current_user.tenant_id if current_user else 0, f"supplier:{supplier_id}:summary")
         return {
             "id": return_invoice.id,
             "invoice_type": return_invoice.invoice_type.value if return_invoice.invoice_type else "PURCHASE_RETURN",
@@ -566,7 +594,7 @@ def delete_supplier(
 
 
 @router.patch("/{supplier_id}/payments/{payment_id}")
-def update_supplier_payment(
+async def update_supplier_payment(
     supplier_id: int,
     payment_id: int,
     data: dict,
@@ -602,11 +630,12 @@ def update_supplier_payment(
 
     db.commit()
     db.refresh(party)
-    return supplier_summary(supplier_id, db, current_user)
+    await delete_cache(current_user.tenant_id if current_user else 0, f"supplier:{supplier_id}:summary")
+    return await supplier_summary(supplier_id, db, current_user)
 
 
 @router.delete("/{supplier_id}/payments/{payment_id}")
-def delete_supplier_payment(
+async def delete_supplier_payment(
     supplier_id: int,
     payment_id: int,
     db: Session = Depends(get_db),
@@ -632,4 +661,5 @@ def delete_supplier_payment(
     db.delete(payment)
     db.commit()
     db.refresh(party)
-    return supplier_summary(supplier_id, db, current_user)
+    await delete_cache(current_user.tenant_id if current_user else 0, f"supplier:{supplier_id}:summary")
+    return await supplier_summary(supplier_id, db, current_user)

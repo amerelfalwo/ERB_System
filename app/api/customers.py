@@ -9,7 +9,9 @@ from app.core.deps import get_current_user
 from app.models.domain import Invoice, InvoiceItem, InvoiceType, Party, PartyType, Payment, Product, StockBatch, User
 from app.schemas.party import CustomerCreate, CustomerUpdate, PartyOut
 from app.services.payments import get_party_balance, get_parties_balances
-from app.core.cache import invalidate_tenant_cache_sync
+from app.core.cache import invalidate_tenant_cache_sync, get_cache, set_cache, delete_cache
+import json
+from datetime import timedelta
 
 router = APIRouter(prefix="/customers", tags=["customers"])
 
@@ -32,16 +34,24 @@ def create_customer(
     db.commit()
     db.refresh(party)
     party.calculated_balance = party.initial_balance
+    
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["customers_list"])
+    
     return party
 
 
 @router.get("", response_model=list[PartyOut])
-def list_customers(
+async def list_customers(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    cache_key_suffix = f"customers_list_{skip}_{limit}"
+    cached_data = await get_cache(current_user.tenant_id, cache_key_suffix)
+    if cached_data:
+        return cached_data if isinstance(cached_data, list) else json.loads(cached_data)
+
     parties = db.execute(
         select(Party).where(
             Party.tenant_id == current_user.tenant_id,
@@ -89,10 +99,20 @@ def list_customers(
         for p in parties:
             p.calculated_balance = balances.get(p.id, Decimal("0"))
             p.total_profit = profits_map.get(p.id, Decimal("0"))
-            if p.calculated_balance <= 0:
-                p.payment_status = "paid"
+            # Basic status mapping
+            if p.calculated_balance > 0:
+                p.payment_status = "عليه ديون"
+            elif p.calculated_balance < 0:
+                p.payment_status = "له مستحقات"
             else:
-                p.payment_status = "unpaid"
+                p.payment_status = "خالص"
+
+    # Serialize and cache
+    from fastapi.encoders import jsonable_encoder
+    result = jsonable_encoder(parties)
+    # The cache utility handles JSON serialization implicitly, but we enforce it for safe decimals
+    await set_cache(current_user.tenant_id, cache_key_suffix, result, ttl=60)
+    
     return parties
 
 
@@ -139,6 +159,9 @@ def update_customer(
     db.commit()
     db.refresh(party)
     party.calculated_balance = get_party_balance(db, customer_id, current_user.tenant_id)
+    
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["customers_list", "customer_summary"])
+    
     return party
 
 
@@ -162,7 +185,7 @@ def customer_balance(
 
 
 @router.post("/{customer_id}/payments")
-def create_customer_payment(
+async def create_customer_payment(
     customer_id: int,
     data: dict,
     db: Session = Depends(get_db),
@@ -196,15 +219,23 @@ def create_customer_payment(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    return customer_summary(customer_id, db, current_user)
+    # Invalidate cached summary so the new payment is reflected immediately
+    from app.core.cache import delete_cache
+    await delete_cache(current_user.tenant_id, f"customer:{customer_id}:summary")
+
+    return await customer_summary(customer_id, db, current_user)
 
 
 @router.get("/{customer_id}/summary")
-def customer_summary(
+async def customer_summary(
     customer_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    cache_key = f"customer:{customer_id}:summary"
+    cached = await get_cache(current_user.tenant_id, cache_key)
+    if cached:
+        return cached
     party = db.execute(
         select(Party).where(
             Party.id == customer_id, 
@@ -381,7 +412,7 @@ def customer_summary(
         for p in payments
     ]
 
-    return {
+    result = {
         "customer": {
             "id": party.id,
             "name": party.name,
@@ -402,10 +433,12 @@ def customer_summary(
         "products": product_summary,
         "payments": payment_list,
     }
+    await set_cache(current_user.tenant_id, cache_key, result, ttl=60)
+    return result
 
 
 @router.post("/{customer_id}/stock-return")
-def customer_stock_return(
+async def customer_stock_return(
     customer_id: int,
     data: dict,
     db: Session = Depends(get_db),
@@ -513,7 +546,9 @@ def customer_stock_return(
         db.rollback()
         raise
 
-    return customer_summary(customer_id, db, current_user)
+    from app.core.cache import delete_cache
+    await delete_cache(current_user.tenant_id, f"customer:{customer_id}:summary")
+    return await customer_summary(customer_id, db, current_user)
 
 
 @router.delete("/{customer_id}")
@@ -548,7 +583,7 @@ def delete_customer(
 
 
 @router.patch("/{customer_id}/payments/{payment_id}")
-def update_customer_payment(
+async def update_customer_payment(
     customer_id: int,
     payment_id: int,
     data: dict,
@@ -584,11 +619,13 @@ def update_customer_payment(
 
     db.commit()
     db.refresh(party)
-    return customer_summary(customer_id, db, current_user)
+    from app.core.cache import delete_cache
+    await delete_cache(current_user.tenant_id, f"customer:{customer_id}:summary")
+    return await customer_summary(customer_id, db, current_user)
 
 
 @router.delete("/{customer_id}/payments/{payment_id}")
-def delete_customer_payment(
+async def delete_customer_payment(
     customer_id: int,
     payment_id: int,
     db: Session = Depends(get_db),
@@ -614,4 +651,6 @@ def delete_customer_payment(
     db.delete(payment)
     db.commit()
     db.refresh(party)
-    return customer_summary(customer_id, db, current_user)
+    from app.core.cache import delete_cache
+    await delete_cache(current_user.tenant_id, f"customer:{customer_id}:summary")
+    return await customer_summary(customer_id, db, current_user)
