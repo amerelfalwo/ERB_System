@@ -22,6 +22,8 @@ from app.services.invoice_service import (
     get_invoice_totals_svc, get_party_previous_balance_svc,
 )
 
+from app.core.cache import invalidate_tenant_cache_sync
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
@@ -88,7 +90,7 @@ def _invoice_out(invoice, invoice_repo: InvoiceRepository, party_repo: PartyRepo
 
 
 @router.get("", response_model=InvoiceListResponse)
-def list_invoices(
+async def list_invoices(
     party_id: int = None,
     invoice_type: str = None,
     search: str = None,
@@ -103,7 +105,7 @@ def list_invoices(
 
 
 @router.post("/purchase", response_model=InvoiceOut)
-def purchase_invoice(
+async def purchase_invoice(
     data: InvoiceCreatePurchase,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -121,11 +123,12 @@ def purchase_invoice(
         raise HTTPException(status_code=404, detail=ERR_PRODUCT_NOT_FOUND)
 
     invoice = create_purchase_invoice_svc(db, inv_repo, batch_repo, data, current_user.tenant_id)
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:inventory", "reports:profit", "reports:net-profit", "parties", "products"])
     return _invoice_out(invoice, inv_repo, party_repo)
 
 
 @router.post("/sell", response_model=InvoiceOut)
-def sell_invoice(
+async def sell_invoice(
     data: InvoiceCreateSell,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -142,7 +145,8 @@ def sell_invoice(
     if product_ids and prod_repo.count_by_ids(product_ids) != len(set(product_ids)):
         raise HTTPException(status_code=404, detail=ERR_PRODUCT_NOT_FOUND)
 
-    invoice = create_sell_invoice_svc(inv_repo, batch_repo, data, current_user.tenant_id)
+    invoice = create_sell_invoice_svc(db, inv_repo, batch_repo, data, current_user.tenant_id)
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:inventory", "reports:profit", "reports:net-profit", "parties", "products"])
     return _invoice_out(invoice, inv_repo, party_repo)
 
 
@@ -161,7 +165,7 @@ def get_invoice(
 
 
 @router.patch("/{invoice_id}", response_model=InvoiceOut)
-def update_invoice(
+async def update_invoice(
     invoice_id: int,
     data: dict,
     db: Session = Depends(get_db),
@@ -172,11 +176,13 @@ def update_invoice(
     invoice = inv_repo.get_by_id(invoice_id)
     if not invoice:
         raise HTTPException(status_code=404, detail=ERR_INVOICE_NOT_FOUND)
-    return update_invoice_svc(db, inv_repo, batch_repo, invoice, data, current_user.tenant_id)
+    result = update_invoice_svc(db, inv_repo, batch_repo, invoice, data, current_user.tenant_id)
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:inventory", "reports:profit", "reports:net-profit", "parties", "products"])
+    return result
 
 
 @router.delete("/{invoice_id}", status_code=204)
-def delete_invoice(
+async def delete_invoice(
     invoice_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -187,6 +193,7 @@ def delete_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail=ERR_INVOICE_NOT_FOUND)
     delete_invoice_svc(inv_repo, batch_repo, invoice)
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:inventory", "reports:profit", "reports:net-profit", "parties", "products"])
 
 
 @router.get("/{invoice_id}/payments", response_model=list[PaymentOut])
@@ -210,7 +217,7 @@ def list_invoice_payments(
 
 
 @router.patch("/{invoice_id}/payments/{payment_id}", response_model=PaymentOut)
-def update_payment(
+async def update_payment(
     invoice_id: int,
     payment_id: int,
     data: dict,
@@ -238,6 +245,7 @@ def update_payment(
         payment.amount = new_amount
     pay_repo.commit()
     pay_repo.refresh(payment)
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:inventory", "reports:profit", "reports:net-profit", "parties", "products"])
     return {
         "id": payment.id,
         "amount": payment.amount,
@@ -246,7 +254,7 @@ def update_payment(
 
 
 @router.delete("/{invoice_id}/payments/{payment_id}", status_code=204)
-def delete_payment(
+async def delete_payment(
     invoice_id: int,
     payment_id: int,
     db: Session = Depends(get_db),
@@ -261,10 +269,11 @@ def delete_payment(
         raise HTTPException(status_code=404, detail="Payment not found")
     pay_repo.delete(payment)
     pay_repo.commit()
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:inventory", "reports:profit", "reports:net-profit", "parties", "products"])
 
 
 @router.post("/{invoice_id}/return", response_model=InvoiceOut)
-def process_return(
+async def process_return(
     invoice_id: int,
     data: dict,
     db: Session = Depends(get_db),
@@ -278,8 +287,9 @@ def process_return(
     if not orig_invoice:
         raise HTTPException(status_code=404, detail=ERR_INVOICE_NOT_FOUND)
 
-    return_invoice = process_return_svc(inv_repo, batch_repo, orig_invoice, data, current_user.tenant_id)
-    return _invoice_out(return_invoice, inv_repo, party_repo)
+    returned_invoice = process_return_svc(db, inv_repo, batch_repo, invoice_id, data, current_user.tenant_id)
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:inventory", "reports:profit", "reports:net-profit", "parties", "products"])
+    return _invoice_out(returned_invoice, inv_repo, party_repo)
 
 
 @router.get("/admin/diagnose-stock")

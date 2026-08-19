@@ -9,6 +9,7 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.domain import User, Expense
 from app.schemas.expense import ExpenseCreate, ExpenseRead, ExpenseSummaryRead
+from app.core.cache import invalidate_tenant_cache_sync
 
 router = APIRouter(prefix="/expenses", tags=["Expenses"])
 
@@ -74,6 +75,7 @@ def create_expense(
     db.add(expense)
     db.commit()
     db.refresh(expense)
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:profit", "reports:net-profit"])
     return expense
 
 @router.get("", response_model=List[ExpenseRead])
@@ -122,4 +124,5 @@ def delete_expense(
 
     db.delete(expense)
     db.commit()
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:profit", "reports:net-profit"])
     return None
