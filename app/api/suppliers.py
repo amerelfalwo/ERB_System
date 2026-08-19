@@ -278,10 +278,9 @@ def supplier_summary(
             ],
         })
 
-    # Fetch all available stock batches belonging to this supplier (including customer return batches)
+    # Fetch all stock batches belonging to this supplier (including customer return batches)
     batch_filter = [
         StockBatch.party_id == supplier_id,
-        StockBatch.remaining_quantity > 0
     ]
     if current_user and current_user.tenant_id is not None:
         batch_filter.append(StockBatch.tenant_id == current_user.tenant_id)
@@ -304,7 +303,6 @@ def supplier_summary(
     if product_ids:
         stock_filter = [
             StockBatch.product_id.in_(product_ids),
-            StockBatch.remaining_quantity > 0
         ]
         latest_filter = [
             StockBatch.party_id == supplier_id,
@@ -333,14 +331,18 @@ def supplier_summary(
     product_summary = []
     for r in supplier_batch_rows:
         pid = r.product_id
+        supp_stock = float(r.supplier_stock)
+        rem_stock = float(stock_map.get(pid, Decimal("0")))
         supp_price = supplier_latest_prices.get(pid) or r.last_purchase_price
-        product_summary.append({
-            "id": pid,
-            "name": r.product_name,
-            "supplier_stock": float(r.supplier_stock),
-            "remaining_stock": float(stock_map.get(pid, Decimal("0"))),
-            "last_purchase_price": float(supp_price or 0),
-        })
+        
+        if supp_stock > 0 and rem_stock > 0:
+            product_summary.append({
+                "id": pid,
+                "name": r.product_name,
+                "supplier_stock": supp_stock,
+                "remaining_stock": rem_stock,
+                "last_purchase_price": float(supp_price or 0),
+            })
 
     total_profit = Decimal("0")
 
@@ -495,15 +497,41 @@ def supplier_stock_return(
             db.add(ii)
 
         db.commit()
+        db.refresh(return_invoice)
         invalidate_tenant_cache_sync(current_user.tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
+
+        return {
+            "id": return_invoice.id,
+            "invoice_type": return_invoice.invoice_type.value if return_invoice.invoice_type else "PURCHASE_RETURN",
+            "total_amount": float(return_invoice.total_amount),
+            "discount_amount": 0,
+            "status": "paid",
+            "created_at": return_invoice.created_at.isoformat() if return_invoice.created_at else None,
+            "party_id": supplier_id,
+            "party_name": party.name,
+            "party": {
+                "id": party.id,
+                "name": party.name,
+            },
+            "items": [
+                {
+                    "id": ii.id,
+                    "batch_id": ii.batch_id,
+                    "product_id": ii.batch.product_id if ii.batch else None,
+                    "product_name": ii.batch.product.name if ii.batch and ii.batch.product else None,
+                    "quantity": float(ii.quantity),
+                    "unit_price": float(ii.unit_price),
+                    "total_price": float(ii.quantity * ii.unit_price),
+                }
+                for ii in return_invoice.items
+            ]
+        }
     except HTTPException:
         db.rollback()
         raise
     except Exception:
         db.rollback()
         raise
-
-    return supplier_summary(supplier_id, db, current_user)
 
 
 @router.delete("/{supplier_id}")
