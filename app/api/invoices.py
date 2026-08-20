@@ -145,7 +145,7 @@ async def sell_invoice(
     if product_ids and prod_repo.count_by_ids(product_ids) != len(set(product_ids)):
         raise HTTPException(status_code=404, detail=ERR_PRODUCT_NOT_FOUND)
 
-    invoice = create_sell_invoice_svc(db, inv_repo, batch_repo, data, current_user.tenant_id)
+    invoice = create_sell_invoice_svc(inv_repo, batch_repo, data, current_user.tenant_id)
     invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:inventory", "reports:profit", "reports:net-profit", "parties", "products"])
     return _invoice_out(invoice, inv_repo, party_repo)
 
@@ -287,7 +287,7 @@ async def process_return(
     if not orig_invoice:
         raise HTTPException(status_code=404, detail=ERR_INVOICE_NOT_FOUND)
 
-    returned_invoice = process_return_svc(db, inv_repo, batch_repo, invoice_id, data, current_user.tenant_id)
+    returned_invoice = process_return_svc(inv_repo, batch_repo, orig_invoice, data, current_user.tenant_id)
     invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:inventory", "reports:profit", "reports:net-profit", "parties", "products"])
     return _invoice_out(returned_invoice, inv_repo, party_repo)
 
