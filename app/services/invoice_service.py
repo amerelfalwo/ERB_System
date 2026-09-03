@@ -671,16 +671,8 @@ def delete_invoice_svc(
                     select(StockBatch).where(StockBatch.id.in_(batch_ids))
                 ).scalars().all()
 
-        for item in invoice.items:
-            invoice_repo.delete(item)
-        invoice_repo.flush()
-
         for b in batches_to_delete:
             batch_repo.delete(b)
-
-        for payment in invoice.payments:
-            invoice_repo.delete(payment)
-        invoice_repo.flush()
 
         invoice_repo.delete(invoice)
         invoice_repo.commit()

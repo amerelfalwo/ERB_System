@@ -152,6 +152,12 @@ def party_profit_summary(db: Session, tenant_id: int, start_date: str = None, en
             party_data[party_id] = {"name": party_name, "profit": Decimal("0"), "revenue": Decimal("0"), "invoices": set()}
             
         party_data[party_id]["invoices"].add(inv_id)
+        if inv_type == InvoiceType.SELL:
+            party_data[party_id]["profit"] -= discount_amount
+            party_data[party_id]["revenue"] -= discount_amount
+        elif inv_type == InvoiceType.SELL_RETURN:
+            party_data[party_id]["profit"] += discount_amount
+            party_data[party_id]["revenue"] += discount_amount
 
     if not invoice_ids:
         return []
