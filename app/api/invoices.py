@@ -1,8 +1,11 @@
 import logging
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from urllib.parse import quote
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
+from app.services.pdf_service import generate_invoice_pdf, generate_pdf_filename
+
 
 from app.core.database import get_db
 from app.core.deps import get_current_user
@@ -163,6 +166,38 @@ def get_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail=ERR_INVOICE_NOT_FOUND)
     return _invoice_out(invoice, inv_repo, party_repo)
+
+
+@router.get("/{invoice_id}/pdf")
+def get_invoice_pdf(
+    invoice_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    inv_repo = InvoiceRepository(db, current_user.tenant_id)
+    invoice = inv_repo.get_by_id(invoice_id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail=ERR_INVOICE_NOT_FOUND)
+
+    pdf_bytes = generate_invoice_pdf(db, invoice)
+
+    party = getattr(invoice, "party", None)
+    party_name = party.name if party else getattr(invoice, "party_name", None)
+    raw_date = invoice.issue_date or invoice.created_at
+    filename = generate_pdf_filename(party_name, raw_date, invoice.invoice_type)
+    
+    # Safe ASCII fallback for HTTP header validation in Starlette
+    ascii_filename = filename.encode("ascii", "ignore").decode("ascii").strip()
+    if not ascii_filename or not ascii_filename.endswith(".pdf"):
+        ascii_filename = f"invoice_{invoice.id}.pdf"
+
+    encoded_filename = quote(filename)
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{encoded_filename}'
+    }
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
 
 
 @router.patch("/{invoice_id}", response_model=InvoiceOut)

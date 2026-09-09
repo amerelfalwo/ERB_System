@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    {% if fonts_dir %}
+    @font-face {
+      font-family: 'Readex Pro';
+      font-style: normal;
+      font-weight: 400;
+      src: url('{{ fonts_dir }}/ReadexPro-Regular.ttf') format('truetype');
+    }
+    @font-face {
+      font-family: 'Readex Pro';
+      font-style: normal;
+      font-weight: 700;
+      src: url('{{ fonts_dir }}/ReadexPro-Bold.ttf') format('truetype');
+    }
+    {% endif %}
+    @import url('https://fonts.googleapis.com/css2?family=Readex+Pro:wght@300;400;500;600;700&display=swap');
+
+    @page {
+      size: A4 portrait;
+      margin: 12mm 15mm;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Readex Pro', 'Inter', 'Helvetica Neue', Arial, sans-serif;
+      color: #1a1a1a;
+      background-color: #ffffff;
+      margin: 0;
+      padding: 0;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .invoice-container {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header Section ─────────────────────────────────────────── */
+    .header {
+      width: 100%;
+      margin-bottom: 20px;
+    }
+
+    .header-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .header-table td {
+      vertical-align: top;
+    }
+
+    .header-left {
+      width: 35%;
+      text-align: left;
+    }
+
+    .header-center {
+      width: 30%;
+      text-align: center;
+      padding-top: 5px;
+    }
+
+    .header-right {
+      width: 35%;
+      text-align: right;
+    }
+
+    .tenant-logo {
+      max-height: 65px;
+      max-width: 160px;
+      height: auto;
+      width: auto;
+      margin-bottom: 6px;
+    }
+
+    .tenant-name {
+      font-size: 16px;
+      font-weight: 700;
+      color: #000000;
+      margin: 0 0 2px 0;
+      letter-spacing: -0.01em;
+    }
+
+    .header-date {
+      font-size: 12px;
+      color: #555555;
+      margin: 0;
+    }
+
+    .main-invoice-title {
+      font-size: 19px;
+      font-weight: 700;
+      color: #0f172a;
+      margin: 0;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .title-sell-return {
+      color: #b91c1c !important;
+    }
+
+    .invoice-number {
+      font-size: 15px;
+      font-weight: 700;
+      color: #000000;
+      margin: 0 0 3px 0;
+    }
+
+    .party-name {
+      font-size: 15px;
+      font-weight: 700;
+      color: #000000;
+      margin: 0;
+      word-break: break-word;
+    }
+
+    .party-phone {
+      font-size: 12px;
+      font-weight: 500;
+      color: #4b5563;
+      margin: 2px 0 0 0;
+      direction: ltr;
+    }
+
+    /* ── Items Table ────────────────────────────────────────────── */
+    .items-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 12px;
+    }
+
+    .items-table th {
+      border-top: 1.5px solid #1a1a1a;
+      border-bottom: 1.5px solid #1a1a1a;
+      padding: 6px 6px 8px 6px;
+      font-size: 13px;
+      font-weight: 800;
+      color: #000000;
+      white-space: nowrap;
+      line-height: 1.5;
+    }
+
+    .col-total { text-align: left; width: 20%; }
+    .col-qty { text-align: center; width: 12%; }
+    .col-price { text-align: right; width: 20%; }
+    .col-item { text-align: right; width: 48%; }
+
+    .items-table td {
+      padding: 7px 6px 10px 6px;
+      vertical-align: middle;
+      font-size: 12.5px;
+      color: #1a1a1a;
+      line-height: 1.5;
+    }
+
+    .item-row td {
+      border-bottom: 1px dotted #b0b0b0;
+    }
+
+    .td-total { text-align: left; font-weight: 700; }
+    .td-qty { text-align: center; }
+    .td-price { text-align: right; }
+    .td-item { text-align: right; font-weight: 700; }
+
+    /* ── Totals Section ─────────────────────────────────────────── */
+    .totals-section {
+      width: 100%;
+      margin-top: 12px;
+      margin-bottom: 12px;
+      page-break-inside: avoid;
+    }
+
+    .totals-table {
+      width: 320px;
+      border-collapse: collapse;
+    }
+
+    .totals-table td {
+      padding: 4px 6px;
+      font-size: 12.5px;
+      color: #1a1a1a;
+    }
+
+    .amount-col { text-align: left; width: 55%; }
+    .label-col { text-align: right; font-weight: 700; width: 45%; }
+
+    .grand-total-row td {
+      font-size: 15px;
+      font-weight: 800;
+      padding-top: 8px;
+      padding-bottom: 8px;
+      border-top: 1.5px solid #1a1a1a;
+    }
+
+    /* ── Bottom Divider ─────────────────────────────────────────── */
+    .divider-bottom {
+      border: none;
+      border-top: 1.5px solid #1a1a1a;
+      margin: 16px 0 12px 0;
+    }
+
+    /* ── Footer ─────────────────────────────────────────────────── */
+    .footer-box {
+      text-align: center;
+      margin-top: 10px;
+      page-break-inside: avoid;
+    }
+
+    .thank-you-text {
+      font-size: 14px;
+      font-weight: 800;
+      color: #000000;
+      margin: 0 0 4px 0;
+    }
+
+    .website-link {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 700;
+      color: #1e3a8a;
+      text-decoration: underline;
+      margin: 0;
+    }
+
+    /* ── Serial Numbers Section (Absolute bottom) ───────────────── */
+    .serial-section {
+      margin-top: 14px;
+      padding-top: 10px;
+      border-top: 1px dashed #cccccc;
+      text-align: center;
+      page-break-inside: avoid;
+    }
+
+    .serial-header {
+      font-size: 12px;
+      font-weight: 800;
+      color: #000000;
+      margin-bottom: 5px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .serial-list {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      align-items: center;
+    }
+
+    .serial-item {
+      font-size: 11.5px;
+      color: #1a1a1a;
+      direction: ltr;
+    }
+
+    .serial-product-name { font-weight: 700; }
+    .serial-separator { color: #666666; margin: 0 3px; }
+    .serial-value { font-family: monospace, sans-serif; font-weight: 600; color: #000000; }
+  </style>
+</head>
+<body>
+  <div class="invoice-container" dir="ltr">
+    <!-- Header Section -->
+    <div class="header">
+      <table class="header-table">
+        <tr>
+          <!-- Left: Logo, Tenant Name, Date -->
+          <td class="header-left">
+            {% if tenant_logo_url %}
+              <img src="{{ tenant_logo_url }}" alt="Logo" class="tenant-logo" />
+            {% endif %}
+            <h1 class="tenant-name">{{ tenant_name }}</h1>
+            <p class="header-date">{{ invoice_date }}</p>
+          </td>
+
+          <!-- Center: Invoice Title -->
+          <td class="header-center">
+            <h2 class="main-invoice-title {% if is_return %}title-sell-return{% endif %}">
+              {{ title_text }}
+            </h2>
+          </td>
+
+          <!-- Right: Invoice #, Customer Name, Phone -->
+          <td class="header-right">
+            <div class="invoice-number">{{ invoice_number }}</div>
+            {% if clean_party_name %}
+              <p class="party-name">
+                <span style="unicode-bidi: plaintext;">Dr / {{ clean_party_name }}</span>
+              </p>
+            {% endif %}
+            {% if party_phone %}
+              <p class="party-phone">{{ party_phone }}</p>
+            {% endif %}
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- Items Table -->
+    <table class="items-table">
+      <thead>
+        <tr>
+          <th class="col-total">Total</th>
+          <th class="col-qty">Qty</th>
+          <th class="col-price">Price</th>
+          <th class="col-item">Item</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if items|length == 0 %}
+          <tr>
+            <td colspan="4" style="text-align: center; color: #6b7280; padding: 20px;">
+              No items in this invoice
+            </td>
+          </tr>
+        {% else %}
+          {% for item in items %}
+            <tr class="item-row">
+              <td class="td-total">{{ item.formatted_total }}</td>
+              <td class="td-qty">{{ item.quantity }}</td>
+              <td class="td-price">{{ item.formatted_price }}</td>
+              <td class="td-item">{{ item.name }}</td>
+            </tr>
+          {% endfor %}
+        {% endif %}
+      </tbody>
+    </table>
+
+    <!-- Totals Section -->
+    <div class="totals-section">
+      <table class="totals-table">
+        <tbody>
+          <tr>
+            <td class="amount-col">{{ formatted_items_total }}</td>
+            <td class="label-col">Items Total</td>
+          </tr>
+
+          <tr>
+            <td class="amount-col">{{ formatted_delivery_fee }}</td>
+            <td class="label-col">Delivery Fees</td>
+          </tr>
+
+          {% if has_discount %}
+            <tr>
+              <td class="amount-col">-{{ formatted_discount }}</td>
+              <td class="label-col">Discount</td>
+            </tr>
+          {% endif %}
+
+          <tr class="grand-total-row">
+            <td class="amount-col">EGP {{ formatted_grand_total }}</td>
+            <td class="label-col">Grand Total</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Solid Black Divider -->
+    <hr class="divider-bottom" />
+
+    <!-- Footer Section -->
+    <div class="footer-box">
+      <h3 class="thank-you-text">
+        {{ footer_text }}
+      </h3>
+      {% if website %}
+        <a href="{{ website_url }}" class="website-link">{{ website }}</a>
+      {% endif %}
+    </div>
+
+    <!-- Serial Numbers Section (The ABSOLUTE LAST element in the invoice) -->
+    {% if serial_items|length > 0 %}
+      <div class="serial-section">
+        <div class="serial-header">Serial Numbers</div>
+        <div class="serial-list">
+          {% for s in serial_items %}
+            <div class="serial-item">
+              <span class="serial-product-name">{{ s.name }}</span>
+              <span class="serial-separator"> - </span>
+              <span class="serial-value">{{ s.serial }}</span>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    {% endif %}
+  </div>
+</body>
+</html>
