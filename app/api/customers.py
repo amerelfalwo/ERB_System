@@ -35,7 +35,7 @@ def create_customer(
     db.refresh(party)
     party.calculated_balance = party.initial_balance
     
-    invalidate_tenant_cache_sync(current_user.tenant_id, ["customers_list"])
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["customers", "parties", "dashboard", "customer"])
     
     return party
 
@@ -160,7 +160,7 @@ def update_customer(
     db.refresh(party)
     party.calculated_balance = get_party_balance(db, customer_id, current_user.tenant_id)
     
-    invalidate_tenant_cache_sync(current_user.tenant_id, ["customers_list", "customer_summary"])
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["customers", "parties", "dashboard", "customer"])
     
     return party
 

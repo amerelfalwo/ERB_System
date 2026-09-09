@@ -134,6 +134,7 @@ class InvoiceItem(Base):
     sell_price = Column(Numeric(12, 2), nullable=True)
     discount = Column(Numeric(12, 2), default=0)
     tax = Column(Numeric(12, 2), default=0)
+    serial_number = Column(String, nullable=True)
     invoice = relationship("Invoice", back_populates="items")
     batch = relationship("StockBatch")
 

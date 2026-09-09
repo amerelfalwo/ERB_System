@@ -15,6 +15,7 @@ class InvoiceItemCreatePurchase(BaseModel):
     discount: Optional[Decimal] = Field(Decimal('0'), ge=0)
     tax: Optional[Decimal] = Field(Decimal('0'), ge=0)
     original_invoice_item_id: Optional[int] = None
+    serial_number: Optional[str] = None
 
 
 class InvoiceItemCreateSell(BaseModel):
@@ -25,6 +26,7 @@ class InvoiceItemCreateSell(BaseModel):
     discount: Optional[Decimal] = Field(Decimal('0'), ge=0)
     tax: Optional[Decimal] = Field(Decimal('0'), ge=0)
     original_invoice_item_id: Optional[int] = None
+    serial_number: Optional[str] = None
 
 # Backwards-compatible aliases used by tests and older code
 InvoiceItemCreateSale = InvoiceItemCreateSell
@@ -75,6 +77,7 @@ class InvoiceItemOut(BaseModel):
     discount: Optional[Decimal] = Decimal('0')
     tax: Optional[Decimal] = Decimal('0')
     original_invoice_item_id: Optional[int] = None
+    serial_number: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

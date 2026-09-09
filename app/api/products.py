@@ -78,16 +78,17 @@ async def list_products(
     skip: int = 0,
     limit: int = 100,
     search: Optional[str] = None,
+    status: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    cache_key = f"products:list:{skip}:{limit}:{search or ''}"
+    cache_key = f"products:list:{skip}:{limit}:{search or ''}:{status or ''}"
     cached = await get_cache(current_user.tenant_id, cache_key)
     if cached is not None:
         return cached
 
     prod_repo = ProductRepository(db, current_user.tenant_id)
-    products = prod_repo.list(skip=skip, limit=limit, search=search)
+    products = prod_repo.list(skip=skip, limit=limit, search=search, status=status)
     if not products:
         return []
 
@@ -125,12 +126,19 @@ async def list_products(
 
 
 @router.get("/select")
-def list_products_select(
+async def list_products_select(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    cache_key = "products:select"
+    cached = await get_cache(current_user.tenant_id, cache_key)
+    if cached is not None:
+        return cached
+
     prod_repo = ProductRepository(db, current_user.tenant_id)
-    return prod_repo.get_all_for_select()
+    res = prod_repo.get_all_for_select()
+    await set_cache(current_user.tenant_id, cache_key, res, ttl=600)
+    return res
 
 
 @router.delete("/{product_id}")

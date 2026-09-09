@@ -61,6 +61,7 @@ def _invoice_out(invoice, invoice_repo: InvoiceRepository, party_repo: PartyRepo
             discount=getattr(item, "discount", Decimal("0")) or Decimal("0"),
             tax=getattr(item, "tax", Decimal("0")) or Decimal("0"),
             original_invoice_item_id=item.original_invoice_item_id,
+            serial_number=getattr(item, "serial_number", None),
         ))
 
     return InvoiceOut(

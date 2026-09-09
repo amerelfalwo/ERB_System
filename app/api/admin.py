@@ -53,6 +53,15 @@ def get_platform_stats(
     }
 
 
+@router.get("/cache-stats")
+async def get_cache_monitoring_stats(
+    _admin: User = Depends(require_super_admin),
+):
+    """Return Redis & memory cache performance metrics (Hits, Misses, Hit Ratio %)."""
+    from app.core.cache import get_cache_stats
+    return await get_cache_stats()
+
+
 # ── List all tenants ─────────────────────────────────────────────────────────
 @router.get("/tenants")
 def list_all_tenants(

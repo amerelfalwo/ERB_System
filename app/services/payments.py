@@ -182,8 +182,20 @@ def get_parties_balances(db: Session, party_ids: list[int], tenant_id: int) -> d
             .group_by(Invoice.party_id, Invoice.invoice_type)
         ).all()
 
-    # Map (party_id, invoice_type) -> sum
-    invoice_map = {(row[0], row[1]): Decimal(str(row[2])) for row in invoice_sums}
+    # Map (party_id, invoice_type) -> sum (support both Enum instances and string values)
+    invoice_map = {}
+    for row in invoice_sums:
+        pid = row[0]
+        itype = row[1]
+        amt = Decimal(str(row[2]))
+        invoice_map[(pid, itype)] = amt
+        if hasattr(itype, 'value'):
+            invoice_map[(pid, itype.value)] = amt
+        elif isinstance(itype, str):
+            try:
+                invoice_map[(pid, InvoiceType(itype))] = amt
+            except (ValueError, KeyError):
+                pass
 
     # 3. Select payment sums grouped by party_id
     payment_sums = db.execute(
@@ -208,8 +220,8 @@ def get_parties_balances(db: Session, party_ids: list[int], tenant_id: int) -> d
             purchase_type = InvoiceType.SELL
             return_type = InvoiceType.SELL_RETURN
 
-        total_invoices = invoice_map.get((pid, purchase_type), Decimal("0"))
-        total_returns = invoice_map.get((pid, return_type), Decimal("0"))
+        total_invoices = invoice_map.get((pid, purchase_type)) or invoice_map.get((pid, purchase_type.value)) or Decimal("0")
+        total_returns = invoice_map.get((pid, return_type)) or invoice_map.get((pid, return_type.value)) or Decimal("0")
         total_paid = payment_map.get(pid, Decimal("0"))
 
         balances[pid] = initial_balances.get(pid, Decimal("0")) + total_invoices - total_returns - total_paid

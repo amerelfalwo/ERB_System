@@ -68,6 +68,7 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS purchase_price NUMERIC(10, 2);",
             "ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS sell_price NUMERIC(10, 2);",
             "ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS original_invoice_item_id INTEGER REFERENCES invoice_items(id);",
+            "ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS serial_number VARCHAR;",
             "ALTER TABLE invoice_items ALTER COLUMN original_invoice_item_id DROP NOT NULL;",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR;",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS purchase_price NUMERIC(10, 2) DEFAULT 0;",

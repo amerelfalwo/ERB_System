@@ -13,8 +13,8 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Global connection pool & resilience state
-_redis_pool: Optional[ConnectionPool] = None
+# Global Redis client management per asyncio event loop
+_redis_clients: dict[int, redis.Redis] = {}
 _redis_available: bool = True
 _last_redis_retry: float = 0.0
 REDIS_RETRY_INTERVAL: float = 30.0  # Probe Redis recovery every 30 seconds
@@ -40,26 +40,28 @@ def _cleanup_memory_cache():
     for k in expired_keys:
         _memory_cache.pop(k, None)
 
-def get_redis_pool() -> Optional[ConnectionPool]:
-    global _redis_pool
-    if _redis_pool is None:
+def get_redis_client() -> Optional[redis.Redis]:
+    try:
+        loop = asyncio.get_running_loop()
+        loop_id = id(loop)
+    except RuntimeError:
+        return None
+
+    global _redis_clients
+    client = _redis_clients.get(loop_id)
+    if client is None:
         try:
-            _redis_pool = ConnectionPool.from_url(
+            client = redis.Redis.from_url(
                 settings.REDIS_URL,
                 decode_responses=True,
                 socket_connect_timeout=2.0,
                 socket_timeout=2.0,
             )
+            _redis_clients[loop_id] = client
         except Exception as e:
-            logger.warning("Failed to initialize Redis ConnectionPool: %s", e)
-            _redis_pool = None
-    return _redis_pool
-
-def get_redis_client() -> Optional[redis.Redis]:
-    pool = get_redis_pool()
-    if pool is None:
-        return None
-    return redis.Redis(connection_pool=pool)
+            logger.warning("Failed to initialize Redis client: %s", e)
+            return None
+    return client
 
 async def check_redis_health() -> bool:
     """Checks if Redis is available or attempts auto-recovery after failure timeout."""
@@ -72,15 +74,69 @@ async def check_redis_health() -> bool:
         _last_redis_retry = now
         try:
             client = get_redis_client()
-            if client:
-                async with client:
-                    if await client.ping():
-                        _redis_available = True
-                        logger.info("Redis connection recovered successfully!")
-                        return True
+            if client and await client.ping():
+                _redis_available = True
+                logger.info("Redis connection recovered successfully!")
+                return True
         except Exception:
             pass
     return False
+
+_cache_stats = {"hits": 0, "misses": 0}
+
+def record_cache_hit():
+    global _cache_stats
+    _cache_stats["hits"] += 1
+
+def record_cache_miss():
+    global _cache_stats
+    _cache_stats["misses"] += 1
+
+async def acquire_lock(tenant_id: int, key_suffix: str, ttl: int = 5) -> bool:
+    """Acquires a short-lived Redis/In-Memory Mutex Lock to prevent Cache Stampede on MISSES."""
+    lock_key = format_tenant_key(tenant_id, f"lock:{key_suffix}")
+    if await check_redis_health():
+        try:
+            client = get_redis_client()
+            if client:
+                acquired = await client.set(lock_key, "1", nx=True, ex=ttl)
+                return bool(acquired)
+        except Exception:
+            pass
+    _cleanup_memory_cache()
+    if lock_key in _memory_cache:
+        return False
+    _memory_cache[lock_key] = {"value": "1", "expires_at": time.time() + ttl}
+    return True
+
+async def release_lock(tenant_id: int, key_suffix: str) -> bool:
+    """Releases the Mutex Lock for a given tenant key."""
+    lock_key = format_tenant_key(tenant_id, f"lock:{key_suffix}")
+    if await check_redis_health():
+        try:
+            client = get_redis_client()
+            if client:
+                await client.delete(lock_key)
+                return True
+        except Exception:
+            pass
+    _memory_cache.pop(lock_key, None)
+    return True
+
+async def get_cache_stats(tenant_id: Optional[int] = None) -> dict[str, Any]:
+    """Retrieves hit/miss counts, hit ratio %, and active memory cache size."""
+    hits = _cache_stats["hits"]
+    misses = _cache_stats["misses"]
+    total = hits + misses
+    hit_ratio = (hits / total * 100.0) if total > 0 else 0.0
+    return {
+        "hits": hits,
+        "misses": misses,
+        "total_requests": total,
+        "hit_ratio_percent": round(hit_ratio, 2),
+        "redis_available": _redis_available,
+        "memory_cache_entries": len(_memory_cache),
+    }
 
 def format_tenant_key(tenant_id: int, key_suffix: str) -> str:
     """Enforces tenant-scoped key format: tenant:{tenant_id}:{key_suffix}"""
@@ -95,14 +151,13 @@ async def get_cache(tenant_id: int, key_suffix: str) -> Optional[Any]:
         try:
             client = get_redis_client()
             if client:
-                async with client:
-                    val = await client.get(key)
-                    if val is not None:
-                        try:
-                            return json.loads(val)
-                        except Exception:
-                            return val
-                    return None
+                val = await client.get(key)
+                if val is not None:
+                    record_cache_hit()
+                    try:
+                        return json.loads(val)
+                    except Exception:
+                        return val
         except Exception as exc:
             logger.warning(f"Redis error during get_cache, falling back to in-memory cache. (Error: {exc})")
             _redis_available = False
@@ -112,7 +167,9 @@ async def get_cache(tenant_id: int, key_suffix: str) -> Optional[Any]:
     _cleanup_memory_cache()
     cached = _memory_cache.get(key)
     if cached and (cached["expires_at"] is None or cached["expires_at"] > time.time()):
+        record_cache_hit()
         return cached["value"]
+    record_cache_miss()
     return None
 
 async def set_cache(tenant_id: int, key_suffix: str, value: Any, ttl: Optional[int] = None) -> bool:
@@ -124,10 +181,9 @@ async def set_cache(tenant_id: int, key_suffix: str, value: Any, ttl: Optional[i
         try:
             client = get_redis_client()
             if client:
-                async with client:
-                    serialized_value = json.dumps(value, cls=EnhancedJSONEncoder) if not isinstance(value, str) else value
-                    await client.set(key, serialized_value, ex=effective_ttl)
-                    return True
+                serialized_value = json.dumps(value, cls=EnhancedJSONEncoder) if not isinstance(value, str) else value
+                await client.set(key, serialized_value, ex=effective_ttl)
+                return True
         except Exception as exc:
             logger.warning(f"Redis error during set_cache, falling back to in-memory cache. (Error: {exc})")
             _redis_available = False
@@ -147,9 +203,8 @@ async def delete_cache(tenant_id: int, key_suffix: str) -> bool:
         try:
             client = get_redis_client()
             if client:
-                async with client:
-                    await client.delete(key)
-                    return True
+                await client.delete(key)
+                return True
         except Exception as exc:
             logger.warning(f"Redis error during delete_cache: {exc}")
             _redis_available = False

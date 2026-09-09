@@ -9,12 +9,12 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.domain import User, Expense
 from app.schemas.expense import ExpenseCreate, ExpenseRead, ExpenseSummaryRead
-from app.core.cache import invalidate_tenant_cache_sync
+from app.core.cache import invalidate_tenant_cache_sync, get_cache, set_cache
 
 router = APIRouter(prefix="/expenses", tags=["Expenses"])
 
 @router.get("/summary", response_model=ExpenseSummaryRead)
-def get_expenses_summary(
+async def get_expenses_summary(
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     db: Session = Depends(get_db),
@@ -23,6 +23,11 @@ def get_expenses_summary(
     """
     Get aggregated expenses summary (total amount, count, top category).
     """
+    cache_key = f"expenses:summary:{date_from or 'all'}:{date_to or 'all'}"
+    cached = await get_cache(current_user.tenant_id, cache_key)
+    if cached is not None:
+        return cached
+
     from datetime import datetime, time
 
     query = db.query(Expense).filter(Expense.tenant_id == current_user.tenant_id)
@@ -46,11 +51,14 @@ def get_expenses_summary(
 
     top_category = top_cat_query[0] if top_cat_query else None
 
-    return ExpenseSummaryRead(
+    result = ExpenseSummaryRead(
         total_expenses=Decimal(str(total_expenses)),
         expenses_count=expenses_count,
         top_category=top_category
     )
+    res_dict = result.model_dump(mode="json") if hasattr(result, "model_dump") else result.dict()
+    await set_cache(current_user.tenant_id, cache_key, res_dict, ttl=300)
+    return result
 
 @router.post("", response_model=ExpenseRead, status_code=status.HTTP_201_CREATED)
 def create_expense(
@@ -75,7 +83,7 @@ def create_expense(
     db.add(expense)
     db.commit()
     db.refresh(expense)
-    invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:profit", "reports:net-profit"])
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["expenses", "dashboard", "reports:profit", "reports:net-profit"])
     return expense
 
 @router.get("", response_model=List[ExpenseRead])
@@ -124,5 +132,5 @@ def delete_expense(
 
     db.delete(expense)
     db.commit()
-    invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:profit", "reports:net-profit"])
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["expenses", "dashboard", "reports:profit", "reports:net-profit"])
     return None

@@ -20,7 +20,7 @@ async def add_payment(
 ):
     try:
         payment = create_payment(db, data, current_user.tenant_id)
-        await invalidate_tenant_cache(current_user.tenant_id, ["dashboard", "reports:party-profits", "parties"])
+        await invalidate_tenant_cache(current_user.tenant_id, ["dashboard", "reports", "parties", "suppliers", "customers", "supplier", "customer"])
         return payment
     except ValueError as exc:
         if "not found" in str(exc).lower():

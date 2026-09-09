@@ -381,10 +381,19 @@ class ProductRepository:
             select(Product).where(Product.id == product_id, Product.tenant_id == self._tid)
         ).scalar_one_or_none()
 
-    def list(self, skip: int = 0, limit: int = 100, search: Optional[str] = None) -> List[Product]:
+    def list(self, skip: int = 0, limit: int = 100, search: Optional[str] = None, status: Optional[str] = None) -> List[Product]:
         q = select(Product).where(Product.tenant_id == self._tid)
         if search:
             q = q.where(Product.name.ilike(f"%{search.strip()}%"))
+        if status in ("in_stock", "out_of_stock"):
+            subq = select(StockBatch.product_id).where(StockBatch.remaining_quantity > 0)
+            if self._tid is not None:
+                subq = subq.where(StockBatch.tenant_id == self._tid)
+            subq = subq.group_by(StockBatch.product_id).having(func.sum(StockBatch.remaining_quantity) > 0)
+            if status == "in_stock":
+                q = q.where(Product.id.in_(subq))
+            elif status == "out_of_stock":
+                q = q.where(~Product.id.in_(subq))
         return self._db.execute(
             q.offset(skip).limit(limit)
         ).scalars().all()

@@ -33,7 +33,7 @@ def create_supplier(
     db.refresh(party)
     party.calculated_balance = party.initial_balance
     
-    invalidate_tenant_cache_sync(current_user.tenant_id, ["suppliers_list"])
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["suppliers", "parties", "dashboard", "supplier"])
     
     return party
 
@@ -70,17 +70,24 @@ async def list_suppliers(
 
 
 @router.get("/select")
-def list_suppliers_select(
+async def list_suppliers_select(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    cache_key = "suppliers:select"
+    cached = await get_cache(current_user.tenant_id, cache_key)
+    if cached is not None:
+        return cached
+
     rows = db.execute(
         select(Party.id, Party.name).where(
             Party.tenant_id == current_user.tenant_id,
             Party.party_type == PartyType.SUPPLIER,
         )
     ).all()
-    return [{"id": r.id, "name": r.name} for r in rows]
+    res = [{"id": r.id, "name": r.name} for r in rows]
+    await set_cache(current_user.tenant_id, cache_key, res, ttl=600)
+    return res
 
 
 @router.put("/{supplier_id}", response_model=PartyOut)
@@ -113,7 +120,7 @@ def update_supplier(
     db.refresh(party)
     party.calculated_balance = get_party_balance(db, supplier_id, current_user.tenant_id)
     
-    invalidate_tenant_cache_sync(current_user.tenant_id, ["suppliers_list", "supplier_summary"])
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["suppliers", "parties", "dashboard", "supplier"])
     
     return party
 

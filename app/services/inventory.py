@@ -83,6 +83,7 @@ def create_purchase_invoice(db: Session, data: InvoiceCreatePurchase, tenant_id:
                 unit_price=purchase_price,
                 purchase_price=purchase_price,
                 sell_price=selling_price,
+                serial_number=getattr(item, "serial_number", None),
             )
             db.add(invoice_item)
             total += purchase_price * item.quantity
@@ -202,6 +203,7 @@ def create_sell_invoice(db: Session, data: InvoiceCreateSell, tenant_id: int = N
                     unit_price=effective_price,
                     purchase_price=batch.purchase_price,
                     sell_price=effective_price,
+                    serial_number=getattr(item, "serial_number", None),
                 )
                 db.add(invoice_item)
                 total += effective_price * qty

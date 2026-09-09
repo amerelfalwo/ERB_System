@@ -66,12 +66,19 @@ async def list_parties(
 
 
 @router.get("/select")
-def list_parties_select(
+async def list_parties_select(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    cache_key = "parties:select"
+    cached = await get_cache(current_user.tenant_id, cache_key)
+    if cached is not None:
+        return cached
+
     party_repo = PartyRepository(db, current_user.tenant_id)
-    return party_repo.get_all_for_select()
+    res = party_repo.get_all_for_select()
+    await set_cache(current_user.tenant_id, cache_key, res, ttl=600)
+    return res
 
 
 @router.get("/suppliers", response_model=list[PartyOut])

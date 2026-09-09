@@ -74,6 +74,7 @@ def _build_invoice_dict(inv: Invoice, paid: Decimal, party_name_map: dict = None
                 "product_name": item.batch.product.name if item.batch and item.batch.product else None,
                 "already_returned_qty": returned_qty_map.get(item.id, Decimal("0")) if returned_qty_map else Decimal("0"),
                 "original_invoice_item_id": item.original_invoice_item_id,
+                "serial_number": getattr(item, "serial_number", None),
             }
             for item in inv.items
         ],
@@ -250,6 +251,7 @@ def create_purchase_invoice_svc(
                 sell_price=selling_price,
                 discount=discount,
                 tax=tax,
+                serial_number=getattr(item, "serial_number", None),
             )
             invoice_repo.add(invoice_item)
             subtotal += purchase_price * item.quantity
@@ -277,7 +279,7 @@ def create_purchase_invoice_svc(
 
         invoice_repo.commit()
         invoice_repo.refresh(invoice)
-        invalidate_tenant_cache_sync(tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
+        invalidate_tenant_cache_sync(tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties", "suppliers", "customers", "supplier"])
         logger.info("Purchase invoice #%s created successfully. Batches: %s. Total: %s",
                     invoice.id, batches_created, invoice.total_amount)
         return invoice
@@ -367,6 +369,7 @@ def create_sell_invoice_svc(
                     sell_price=effective_price,
                     discount=discount,
                     tax=tax,
+                    serial_number=getattr(item, "serial_number", None),
                 )
                 invoice_repo.add(invoice_item)
                 subtotal += effective_price * qty
@@ -390,7 +393,7 @@ def create_sell_invoice_svc(
 
         invoice_repo.commit()
         invoice_repo.refresh(invoice)
-        invalidate_tenant_cache_sync(tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
+        invalidate_tenant_cache_sync(tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties", "suppliers", "customers", "supplier"])
         return invoice
     except Exception:
         invoice_repo.rollback()
@@ -583,7 +586,7 @@ def update_invoice_svc(
             invoice.notes = data.get("notes")
 
         invoice_repo.commit()
-        invalidate_tenant_cache_sync(tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
+        invalidate_tenant_cache_sync(tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties", "suppliers", "customers", "supplier"])
     except Exception:
         invoice_repo.rollback()
         raise
@@ -676,7 +679,7 @@ def delete_invoice_svc(
 
         invoice_repo.delete(invoice)
         invoice_repo.commit()
-        invalidate_tenant_cache_sync(tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
+        invalidate_tenant_cache_sync(tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties", "suppliers", "customers", "supplier"])
     except Exception:
         invoice_repo.rollback()
         raise
@@ -823,7 +826,7 @@ def process_return_svc(
         return_invoice.total_amount = total_return
 
         invoice_repo.commit()
-        invalidate_tenant_cache_sync(tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties"])
+        invalidate_tenant_cache_sync(tenant_id, ["products", "dashboard", "reports:profit", "reports:net-profit", "reports:inventory", "reports:party-profits", "parties", "suppliers", "customers", "supplier"])
     except Exception:
         invoice_repo.rollback()
         raise
