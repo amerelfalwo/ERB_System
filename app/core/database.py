@@ -4,7 +4,7 @@ import time
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import QueuePool
 
 from app.core.config import settings
 from app.models import Base
@@ -24,26 +24,30 @@ db_url = make_url(_raw_url)
 
 # ---------------------------------------------------------------------------
 # 2. Build connect_args for the Supabase pooler
-#    • No `options` — PgBouncer/Supavisor rejects unknown startup params.
-#    • `sslmode=require` for remote hosts.
 # ---------------------------------------------------------------------------
 connect_args: dict = {
     "connect_timeout": 10,
     "keepalives": 1,
-    "keepalives_idle": 30,
-    "keepalives_interval": 10,
+    "keepalives_idle": 15,
+    "keepalives_interval": 5,
     "keepalives_count": 5,
 }
 if db_url.host and db_url.host not in {"localhost", "127.0.0.1"}:
     connect_args["sslmode"] = "require"
 
 # ---------------------------------------------------------------------------
-# 3. Engine — NullPool because Supabase Supavisor already pools server-side.
-#    Client-side pooling on top causes double-pooling & ECIRCUITBREAKER errors.
+# 3. Engine — QueuePool with pool_pre_ping & pool_recycle to maintain warm SSL connections
+#    use_native_hstore=False prevents psycopg2 from executing startup hstore catalog queries
+#    that trigger unexpected SSL termination on Supabase PgBouncer (Port 6543).
 # ---------------------------------------------------------------------------
 engine = create_engine(
     _raw_url,
-    poolclass=NullPool,
+    use_native_hstore=False,
+    poolclass=QueuePool,
+    pool_size=10,
+    max_overflow=20,
+    pool_recycle=300,
+    pool_timeout=15,
     pool_pre_ping=True,
     connect_args=connect_args,
 )
@@ -52,11 +56,10 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 # ---------------------------------------------------------------------------
-# 4. get_db — yields a session, with retry on transient connection errors
-#    so that an ECIRCUITBREAKER doesn't crash the whole request immediately.
+# 4. get_db — yields a session, with pool_pre_ping handling connection verification.
+#    Short 0.2s non-blocking retries prevent threadpool worker exhaustion.
 # ---------------------------------------------------------------------------
 _MAX_RETRIES = 3
-_RETRY_DELAY = 2  # seconds, doubles each retry
 
 
 def get_db():
@@ -65,8 +68,6 @@ def get_db():
     while True:
         try:
             db = SessionLocal()
-            # Force a lightweight round-trip to verify the connection is alive
-            db.execute(text("SELECT 1"))
             break
         except Exception as exc:
             if db:
@@ -76,16 +77,16 @@ def get_db():
                     pass
                 db = None
             retries += 1
-            if retries > _MAX_RETRIES:
+            if retries >= _MAX_RETRIES:
                 logger.error("Database connection failed after %d retries: %s", _MAX_RETRIES, exc)
                 raise
-            wait = _RETRY_DELAY * (2 ** (retries - 1))
             logger.warning(
-                "Database connection attempt %d/%d failed (%s). Retrying in %ds...",
-                retries, _MAX_RETRIES, exc.__class__.__name__, wait,
+                "Database session creation attempt %d/%d failed (%s). Retrying in 0.2s...",
+                retries, _MAX_RETRIES, exc.__class__.__name__,
             )
-            time.sleep(wait)
+            time.sleep(0.2 * retries)
     try:
         yield db
     finally:
-        db.close()
+        if db:
+            db.close()

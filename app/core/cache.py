@@ -159,7 +159,7 @@ async def get_cache(tenant_id: int, key_suffix: str) -> Optional[Any]:
                     except Exception:
                         return val
         except Exception as exc:
-            logger.warning(f"Redis error during get_cache, falling back to in-memory cache. (Error: {exc})")
+            logger.info("Redis error during get_cache, falling back to in-memory cache. (Error: %s)", exc)
             _redis_available = False
             _last_redis_retry = time.time()
             
