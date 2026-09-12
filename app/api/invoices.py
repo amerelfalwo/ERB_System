@@ -209,12 +209,16 @@ async def update_invoice(
 ):
     inv_repo = InvoiceRepository(db, current_user.tenant_id)
     batch_repo = BatchRepository(db, current_user.tenant_id)
+    party_repo = PartyRepository(db, current_user.tenant_id)
     invoice = inv_repo.get_by_id(invoice_id)
     if not invoice:
         raise HTTPException(status_code=404, detail=ERR_INVOICE_NOT_FOUND)
-    result = update_invoice_svc(db, inv_repo, batch_repo, invoice, data, current_user.tenant_id)
+    # update_invoice_svc commits changes and returns the refreshed invoice ORM object
+    updated_invoice = update_invoice_svc(db, inv_repo, batch_repo, invoice, data, current_user.tenant_id)
     invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:inventory", "reports:profit", "reports:net-profit", "parties", "products"])
-    return result
+    # Re-fetch fresh to ensure all relationships (batch→product) are loaded
+    refreshed = inv_repo.get_by_id(updated_invoice["id"] if isinstance(updated_invoice, dict) else updated_invoice.id)
+    return _invoice_out(refreshed, inv_repo, party_repo)
 
 
 @router.delete("/{invoice_id}", status_code=204)
