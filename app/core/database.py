@@ -61,6 +61,7 @@ _RETRY_DELAY = 2  # seconds, doubles each retry
 
 def get_db():
     retries = 0
+    db = None
     while True:
         try:
             db = SessionLocal()
@@ -68,6 +69,12 @@ def get_db():
             db.execute(text("SELECT 1"))
             break
         except Exception as exc:
+            if db:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+                db = None
             retries += 1
             if retries > _MAX_RETRIES:
                 logger.error("Database connection failed after %d retries: %s", _MAX_RETRIES, exc)
