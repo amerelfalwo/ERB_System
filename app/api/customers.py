@@ -226,6 +226,50 @@ async def create_customer_payment(
     return await customer_summary(customer_id, db, current_user)
 
 
+@router.post("/{customer_id}/advance-payment")
+async def create_customer_advance_payment(
+    customer_id: int,
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Record an advance/prepayment from a customer regardless of current balance."""
+    party = db.execute(
+        select(Party).where(
+            Party.id == customer_id,
+            Party.tenant_id == current_user.tenant_id,
+            Party.party_type == PartyType.CLIENT,
+        )
+    ).scalar_one_or_none()
+    if not party:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    amount = Decimal(str(data.get("amount", 0)))
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Invalid advance payment amount")
+
+    notes = data.get("notes") or data.get("note") or data.get("comments") or data.get("comment")
+
+    from app.services.payments import create_advance_payment
+    from app.core.cache import delete_cache, invalidate_tenant_cache
+
+    try:
+        create_advance_payment(
+            db=db,
+            party_id=party.id,
+            amount=float(amount),
+            notes=notes,
+            tenant_id=current_user.tenant_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    await delete_cache(current_user.tenant_id, f"customer:{customer_id}:summary")
+    await invalidate_tenant_cache(current_user.tenant_id, ["dashboard", "reports", "parties", "customers", "customer"])
+
+    return await customer_summary(customer_id, db, current_user)
+
+
 @router.get("/{customer_id}/summary")
 async def customer_summary(
     customer_id: int,

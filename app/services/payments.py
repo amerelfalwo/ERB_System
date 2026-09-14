@@ -228,3 +228,36 @@ def get_parties_balances(db: Session, party_ids: list[int], tenant_id: int) -> d
 
     return balances
 
+
+def create_advance_payment(db: Session, party_id: int, amount: float, notes: str = None, tenant_id: int = None) -> Payment:
+    """
+    Record an advance payment (prepayment) from a party.
+    Unlike create_payment, this does NOT validate against outstanding balance —
+    it simply inserts the payment record, which will push the balance negative
+    (credit in favour of the party) and can be consumed by future invoices.
+    """
+    if amount <= 0:
+        raise ValueError("Advance payment amount must be positive")
+
+    if tenant_id is None:
+        party = db.execute(select(Party).where(Party.id == party_id)).scalar_one_or_none()
+    else:
+        party = db.execute(
+            select(Party).where(Party.id == party_id, Party.tenant_id == tenant_id)
+        ).scalar_one_or_none()
+        if not party:
+            party = db.execute(select(Party).where(Party.id == party_id)).scalar_one_or_none()
+
+    if not party:
+        raise ValueError(f"Party {party_id} not found")
+
+    payment = Payment(
+        party_id=party_id,
+        invoice_id=None,
+        amount=amount,
+        notes=notes,
+    )
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+    return payment
