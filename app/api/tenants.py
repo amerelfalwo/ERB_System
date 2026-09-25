@@ -2,7 +2,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -38,6 +38,8 @@ class TenantUpdate(BaseModel):
 
 
 class TenantOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     company_name: str
     logo_url: Optional[str] = None
@@ -50,9 +52,6 @@ class TenantOut(BaseModel):
     website: Optional[str] = None
     print_notes: Optional[str] = None
     is_active: bool
-
-    class Config:
-        from_attributes = True
 
     @model_validator(mode='after')
     def populate_aliases(self):

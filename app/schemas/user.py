@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional
 
 
@@ -17,16 +17,17 @@ class UserCreate(BaseModel):
 
 
 class UserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     username: str
     full_name: Optional[str] = None
     role: str
 
-    class Config:
-        from_attributes = True
-
 
 class TenantInfo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     company_name: str
     logo_url: Optional[str] = None
@@ -39,19 +40,15 @@ class TenantInfo(BaseModel):
     print_notes: Optional[str] = None
     store_name: Optional[str] = None
 
-    class Config:
-        from_attributes = True
-
 
 class UserProfile(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     username: str
     full_name: Optional[str] = None
     role: str
     tenant: TenantInfo
-
-    class Config:
-        from_attributes = True
 
 
 class Token(BaseModel):

@@ -1,7 +1,7 @@
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 class ExpenseBase(BaseModel):
     description: str = Field(..., title="Description", min_length=1)
@@ -13,13 +13,12 @@ class ExpenseCreate(ExpenseBase):
     pass
 
 class ExpenseRead(ExpenseBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     tenant_id: int
     created_by: Optional[int]
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 class ExpenseSummaryRead(BaseModel):
     total_expenses: Decimal

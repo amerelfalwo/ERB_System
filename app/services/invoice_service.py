@@ -376,6 +376,13 @@ def create_sell_invoice_svc(
                 total_item_discount += discount
                 total_item_tax += tax
 
+            product = invoice_repo._db.execute(
+                select(Product).where(Product.id == item.product_id, Product.tenant_id == tenant_id)
+            ).scalar_one_or_none()
+            if product and effective_price > Decimal("0"):
+                product.sell_price = effective_price
+                invoice_repo.add(product)
+
         disc_amount = (data.discount_amount if data.discount_amount is not None and data.discount_amount > 0 else (data.total_discount or Decimal("0")))
         invoice.discount_amount = disc_amount
         invoice.total_discount = disc_amount + total_item_discount
