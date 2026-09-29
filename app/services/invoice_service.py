@@ -42,6 +42,60 @@ def _build_invoice_dict(inv: Invoice, paid: Decimal, party_name_map: dict = None
             sell = item.sell_price if item.sell_price is not None else item.unit_price
             profit += (sell - cost) * item.quantity
 
+    # For SELL invoices, consolidate multiple per-batch DB rows for the same product
+    # into a single frontend line item. DB keeps per-batch rows for exact COGS accounting.
+    if inv.invoice_type == INVOICE_TYPE_SELL:
+        from collections import OrderedDict
+        merged: OrderedDict = OrderedDict()
+        for item in inv.items:
+            product_id = item.batch.product_id if item.batch else None
+            product_name = item.batch.product.name if item.batch and item.batch.product else None
+            key = product_id
+            if key not in merged:
+                merged[key] = {
+                    "id": item.id,
+                    "batch_id": item.batch_id,
+                    "product_id": product_id,
+                    "quantity": Decimal("0"),
+                    "unit_price": item.unit_price,
+                    "purchase_price": item.purchase_price,
+                    "sell_price": item.sell_price,
+                    "product_name": product_name,
+                    "already_returned_qty": Decimal("0"),
+                    "original_invoice_item_id": item.original_invoice_item_id,
+                    "serial_number": getattr(item, "serial_number", None),
+                    "_total_cost": Decimal("0"),
+                }
+            entry = merged[key]
+            entry["quantity"] += item.quantity
+            entry["_total_cost"] += (item.purchase_price or Decimal("0")) * item.quantity
+            if returned_qty_map:
+                entry["already_returned_qty"] += returned_qty_map.get(item.id, Decimal("0"))
+
+        items_out = []
+        for entry in merged.values():
+            qty = entry["quantity"]
+            entry["purchase_price"] = (entry["_total_cost"] / qty) if qty > 0 else Decimal("0")
+            del entry["_total_cost"]
+            items_out.append(entry)
+    else:
+        items_out = [
+            {
+                "id": item.id,
+                "batch_id": item.batch_id,
+                "product_id": item.batch.product_id if item.batch else None,
+                "quantity": item.quantity,
+                "unit_price": item.unit_price,
+                "purchase_price": item.purchase_price if item.purchase_price else None,
+                "sell_price": item.sell_price if item.sell_price else None,
+                "product_name": item.batch.product.name if item.batch and item.batch.product else None,
+                "already_returned_qty": returned_qty_map.get(item.id, Decimal("0")) if returned_qty_map else Decimal("0"),
+                "original_invoice_item_id": item.original_invoice_item_id,
+                "serial_number": getattr(item, "serial_number", None),
+            }
+            for item in inv.items
+        ]
+
     return {
         "id": inv.id,
         "party_id": inv.party_id,
@@ -62,22 +116,7 @@ def _build_invoice_dict(inv: Invoice, paid: Decimal, party_name_map: dict = None
         "status": _invoice_status(paid, inv.total_amount),
         "invoice_profit": profit,
         "created_at": inv.created_at.isoformat() if inv.created_at else None,
-        "items": [
-            {
-                "id": item.id,
-                "batch_id": item.batch_id,
-                "product_id": item.batch.product_id if item.batch else None,
-                "quantity": item.quantity,
-                "unit_price": item.unit_price,
-                "purchase_price": item.purchase_price if item.purchase_price else None,
-                "sell_price": item.sell_price if item.sell_price else None,
-                "product_name": item.batch.product.name if item.batch and item.batch.product else None,
-                "already_returned_qty": returned_qty_map.get(item.id, Decimal("0")) if returned_qty_map else Decimal("0"),
-                "original_invoice_item_id": item.original_invoice_item_id,
-                "serial_number": getattr(item, "serial_number", None),
-            }
-            for item in inv.items
-        ],
+        "items": items_out,
     }
 
 
@@ -354,12 +393,12 @@ def create_sell_invoice_svc(
             for batch, qty in allocations:
                 batch.remaining_quantity = batch.remaining_quantity - qty
                 locked_cost = batch.purchase_price
-                
+
                 # Pro-rate discount and tax based on the quantity allocated
                 fraction = qty / item.quantity if item.quantity > 0 else Decimal("0")
                 discount = (item.discount or Decimal("0")) * fraction
                 tax = (item.tax or Decimal("0")) * fraction
-                
+
                 invoice_item = InvoiceItem(
                     invoice_id=invoice.id,
                     batch_id=batch.id,
@@ -455,29 +494,29 @@ def update_invoice_svc(
                                 product_id = b.product_id
                         if not product_id:
                             raise HTTPException(status_code=400, detail="يجب توفير product_id لكل صنف في الفاتورة")
-                            
+
                     quantity = Decimal(str(item.get("quantity", 0)))
                     sell_price = item.get("sell_price") or item.get("unit_price")
-                    
+
                     latest_price = batch_repo.get_highest_selling_price(product_id)
                     if latest_price is None:
                         raise HTTPException(status_code=400, detail=f"No batches available for product {product_id}")
                     effective_price = Decimal(str(sell_price)) if sell_price is not None else latest_price
                     if effective_price <= Decimal("0"):
                         raise HTTPException(status_code=400, detail=f"سعر البيع غير محدد أو صفر للمنتج ID {product_id}. يرجى إدخال سعر بيع صحيح.")
-                        
+
                     if quantity <= Decimal("0"):
                         raise HTTPException(status_code=400, detail="الكمية يجب أن تكون أكبر من الصفر")
-                        
+
                     allocations = allocate_batches_svc(batch_repo, product_id, quantity)
                     for batch, qty in allocations:
                         batch.remaining_quantity = batch.remaining_quantity - qty
                         locked_cost = batch.purchase_price
-                        
+
                         fraction = qty / quantity if quantity > 0 else Decimal("0")
                         discount = Decimal(str(item.get("discount", "0"))) * fraction
                         tax = Decimal(str(item.get("tax", "0"))) * fraction
-                        
+
                         invoice_item = InvoiceItem(
                             invoice_id=invoice.id,
                             batch_id=batch.id,
