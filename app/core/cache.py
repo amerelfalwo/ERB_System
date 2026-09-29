@@ -54,8 +54,8 @@ def get_redis_client() -> Optional[redis.Redis]:
             client = redis.Redis.from_url(
                 settings.REDIS_URL,
                 decode_responses=True,
-                socket_connect_timeout=2.0,
-                socket_timeout=2.0,
+                socket_connect_timeout=0.5,   # Fail fast if Redis not available
+                socket_timeout=1.0,
             )
             _redis_clients[loop_id] = client
         except Exception as e:
@@ -226,33 +226,33 @@ return 0
 async def delete_pattern(tenant_id: int, pattern_suffix: str) -> int:
     global _redis_available, _last_redis_retry
     pattern = format_tenant_key(tenant_id, pattern_suffix)
-    
+
     if await check_redis_health():
         try:
             client = get_redis_client()
             if client:
-                async with client:
-                    try:
-                        deleted_count = await client.eval(LUA_DELETE_PATTERN_SCRIPT, 0, pattern)
-                        return int(deleted_count)
-                    except Exception:
-                        keys = []
-                        async for k in client.scan_iter(match=pattern):
-                            keys.append(k)
-                        if keys:
-                            return await client.delete(*keys)
-                        return 0
+                # Do NOT use `async with client:` — that closes the shared pool
+                try:
+                    deleted_count = await client.eval(LUA_DELETE_PATTERN_SCRIPT, 0, pattern)
+                    return int(deleted_count)
+                except Exception:
+                    # Fallback: SCAN + DEL
+                    keys = [k async for k in client.scan_iter(match=pattern, count=100)]
+                    if keys:
+                        return await client.delete(*keys)
+                    return 0
         except Exception as exc:
-            logger.warning(f"Redis error during delete_pattern: {exc}")
+            logger.warning("Redis error during delete_pattern: %s", exc)
             _redis_available = False
             _last_redis_retry = time.time()
 
     # In-memory fallback
     prefix = pattern.replace('*', '')
-    keys_to_delete = [k for k in _memory_cache.keys() if k.startswith(prefix)]
+    keys_to_delete = [k for k in list(_memory_cache.keys()) if k.startswith(prefix)]
     for k in keys_to_delete:
         _memory_cache.pop(k, None)
     return len(keys_to_delete)
+
 
 async def invalidate_tenant_cache(tenant_id: int, categories: list[str]) -> int:
     total_deleted = 0
