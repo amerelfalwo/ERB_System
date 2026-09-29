@@ -559,6 +559,47 @@ def update_invoice_svc(
                 new_global_tax = Decimal(str(data["total_tax"])) if "total_tax" in data else old_global_tax
                 invoice.total_discount = new_global_discount + total_item_discount
                 invoice.total_tax = new_global_tax + total_item_tax
+            elif invoice.invoice_type in (INVOICE_TYPE_SELL_RETURN, INVOICE_TYPE_PURCHASE_RETURN):
+                old_map = {str(item.batch_id): item for item in invoice.items}
+                subtotal = Decimal("0")
+                total_item_discount = Decimal("0")
+                total_item_tax = Decimal("0")
+                for item_data in new_items:
+                    batch_id = str(item_data.get("batch_id") or "")
+                    new_qty = Decimal(str(item_data.get("quantity", 0)))
+                    new_price = Decimal(str(item_data.get("unit_price", 0)))
+                    discount = Decimal(str(item_data.get("discount", 0)))
+                    tax = Decimal(str(item_data.get("tax", 0)))
+
+                    old_item = old_map.get(batch_id)
+                    if not old_item:
+                        old_item = next((i for i in invoice.items if str(i.id) == str(item_data.get("id"))), None)
+                    if not old_item:
+                        continue
+
+                    old_qty = old_item.quantity
+                    qty_diff = new_qty - old_qty
+
+                    if invoice.invoice_type == INVOICE_TYPE_SELL_RETURN:
+                        batch = batch_repo.get_by_id(old_item.batch_id)
+                        if batch:
+                            batch.remaining_quantity += qty_diff
+                    elif invoice.invoice_type == INVOICE_TYPE_PURCHASE_RETURN:
+                        batch = batch_repo.get_by_id(old_item.batch_id)
+                        if batch:
+                            batch.remaining_quantity -= qty_diff
+
+                    old_item.quantity = new_qty
+                    old_item.unit_price = new_price
+                    subtotal += new_qty * new_price
+                    total_item_discount += discount
+                    total_item_tax += tax
+
+                invoice.subtotal = subtotal
+                new_global_discount = Decimal(str(data["total_discount"])) if "total_discount" in data else old_global_discount
+                new_global_tax = Decimal(str(data["total_tax"])) if "total_tax" in data else old_global_tax
+                invoice.total_discount = new_global_discount + total_item_discount
+                invoice.total_tax = new_global_tax + total_item_tax
             else:
                 raise HTTPException(status_code=400, detail=ERR_CANNOT_MODIFY_RETURN)
 

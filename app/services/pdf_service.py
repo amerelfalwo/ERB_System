@@ -103,7 +103,7 @@ def generate_invoice_pdf(db: Session, invoice: Invoice) -> bytes:
     invoice_date = _format_date(raw_date)
 
     # Items & Serials
-    items_formatted = []
+    grouped_items_map = {}
     serial_items = []
     calculated_items_total = Decimal("0")
 
@@ -116,23 +116,20 @@ def generate_invoice_pdf(db: Session, invoice: Invoice) -> bytes:
             prod_name = item.product_name
 
         qty = item.quantity or 0
-        if isinstance(qty, Decimal) and qty == qty.to_integral_value():
-            qty_display = int(qty)
-        else:
-            qty_display = float(qty)
-
         price = item.unit_price or getattr(item, "sell_price", None) or getattr(item, "purchase_price", None) or Decimal("0")
         total = qty * price
         calculated_items_total += total
 
-        items_formatted.append({
-            "name": prod_name,
-            "quantity": qty_display,
-            "unit_price": price,
-            "total": total,
-            "formatted_price": _fmt_money(price),
-            "formatted_total": _fmt_money(total),
-        })
+        if prod_name in grouped_items_map:
+            grouped_items_map[prod_name]["raw_qty"] += qty
+            grouped_items_map[prod_name]["total"] += total
+        else:
+            grouped_items_map[prod_name] = {
+                "name": prod_name,
+                "raw_qty": qty,
+                "unit_price": price,
+                "total": total,
+            }
 
         # Serial numbers
         raw_sn = getattr(item, "serial_number", None) or getattr(item, "serial_numbers", None) or getattr(item, "serials", None)
@@ -146,6 +143,23 @@ def generate_invoice_pdf(db: Session, invoice: Invoice) -> bytes:
                     "name": prod_name,
                     "serial": sn_str
                 })
+
+    items_formatted = []
+    for g in grouped_items_map.values():
+        raw_q = g["raw_qty"]
+        if isinstance(raw_q, Decimal) and raw_q == raw_q.to_integral_value():
+            qty_display = int(raw_q)
+        else:
+            qty_display = float(raw_q)
+        
+        items_formatted.append({
+            "name": g["name"],
+            "quantity": qty_display,
+            "unit_price": g["unit_price"],
+            "total": g["total"],
+            "formatted_price": _fmt_money(g["unit_price"]),
+            "formatted_total": _fmt_money(g["total"]),
+        })
 
     # Totals calculation
     items_total = calculated_items_total
