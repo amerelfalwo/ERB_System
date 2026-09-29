@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, or_, case
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.database import get_db
@@ -81,24 +81,69 @@ async def list_parties_select(
     return res
 
 
+def _sql_norm_arabic(col):
+    res = func.lower(col)
+    res = func.replace(res, 'أ', 'ا')
+    res = func.replace(res, 'إ', 'ا')
+    res = func.replace(res, 'آ', 'ا')
+    res = func.replace(res, 'ة', 'ه')
+    res = func.replace(res, 'ى', 'ي')
+    return res
+
+def _norm_arabic_str(s: str) -> str:
+    if not s:
+        return ""
+    s = s.lower().strip()
+    s = s.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
+    s = s.replace('ة', 'ه').replace('ى', 'ي')
+    return s
+
+
 @router.get("/suppliers", response_model=list[PartyOut])
 async def list_suppliers(
     skip: int = 0,
     limit: int = 100,
+    search: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    cache_key = f"parties:list:suppliers:{skip}:{limit}"
+    search_str = (search or "").strip()
+    cache_key = f"parties:list:suppliers:{skip}:{limit}:{search_str}"
     cached = await get_cache(current_user.tenant_id, cache_key)
     if cached is not None:
         return cached
 
-    parties = db.execute(
-        select(Party).where(
-            Party.tenant_id == current_user.tenant_id,
-            Party.party_type == PartyType.SUPPLIER,
-        ).offset(skip).limit(limit)
-    ).scalars().all()
+    stmt = select(Party).where(
+        Party.tenant_id == current_user.tenant_id,
+        Party.party_type == PartyType.SUPPLIER,
+    )
+
+    if search_str:
+        norm_q = _norm_arabic_str(search_str)
+        pattern = f"%{search_str}%"
+        norm_pattern = f"%{norm_q}%"
+        name_norm = _sql_norm_arabic(Party.name)
+
+        stmt = stmt.where(
+            or_(
+                Party.name.ilike(pattern),
+                name_norm.like(norm_pattern),
+                Party.phone.ilike(pattern),
+                Party.address.ilike(pattern),
+            )
+        )
+        rank_expr = case(
+            (name_norm == norm_q, 1),
+            (Party.phone == search_str, 1),
+            (name_norm.like(f"{norm_q}%"), 2),
+            (Party.phone.like(f"{search_str}%"), 2),
+            else_=3
+        )
+        stmt = stmt.order_by(rank_expr, Party.name.asc())
+    else:
+        stmt = stmt.order_by(Party.name.asc())
+
+    parties = db.execute(stmt.offset(skip).limit(limit)).scalars().all()
     if parties:
         party_ids = [p.id for p in parties]
         balances = get_parties_balances(db, party_ids, current_user.tenant_id)
@@ -150,20 +195,47 @@ def list_suppliers_select(
 async def list_customers(
     skip: int = 0,
     limit: int = 100,
+    search: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    cache_key = f"parties:list:customers:{skip}:{limit}"
+    search_str = (search or "").strip()
+    cache_key = f"parties:list:customers:{skip}:{limit}:{search_str}"
     cached = await get_cache(current_user.tenant_id, cache_key)
     if cached is not None:
         return cached
 
-    parties = db.execute(
-        select(Party).where(
-            Party.tenant_id == current_user.tenant_id,
-            Party.party_type == PartyType.CLIENT,
-        ).offset(skip).limit(limit)
-    ).scalars().all()
+    stmt = select(Party).where(
+        Party.tenant_id == current_user.tenant_id,
+        Party.party_type == PartyType.CLIENT,
+    )
+
+    if search_str:
+        norm_q = _norm_arabic_str(search_str)
+        pattern = f"%{search_str}%"
+        norm_pattern = f"%{norm_q}%"
+        name_norm = _sql_norm_arabic(Party.name)
+
+        stmt = stmt.where(
+            or_(
+                Party.name.ilike(pattern),
+                name_norm.like(norm_pattern),
+                Party.phone.ilike(pattern),
+                Party.address.ilike(pattern),
+            )
+        )
+        rank_expr = case(
+            (name_norm == norm_q, 1),
+            (Party.phone == search_str, 1),
+            (name_norm.like(f"{norm_q}%"), 2),
+            (Party.phone.like(f"{search_str}%"), 2),
+            else_=3
+        )
+        stmt = stmt.order_by(rank_expr, Party.name.asc())
+    else:
+        stmt = stmt.order_by(Party.name.asc())
+
+    parties = db.execute(stmt.offset(skip).limit(limit)).scalars().all()
     if parties:
         party_ids = [p.id for p in parties]
         balances = get_parties_balances(db, party_ids, current_user.tenant_id)
