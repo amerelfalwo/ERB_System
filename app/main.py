@@ -105,6 +105,11 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE payments ADD COLUMN IF NOT EXISTS notes TEXT;",
             # Approve existing tenants by default
             "UPDATE tenants SET is_approved = true WHERE is_approved IS NULL OR is_approved = false;",
+            # High-performance composite indexes
+            "CREATE INDEX IF NOT EXISTS ix_invoices_tenant_party_type ON invoices (tenant_id, party_id, invoice_type);",
+            "CREATE INDEX IF NOT EXISTS ix_invoices_tenant_created ON invoices (tenant_id, created_at DESC);",
+            "CREATE INDEX IF NOT EXISTS ix_stock_batches_tenant_prod_qty ON stock_batches (tenant_id, product_id, remaining_quantity);",
+            "CREATE INDEX IF NOT EXISTS ix_parties_tenant_type ON parties (tenant_id, party_type);",
         ]
 
         log_dir = BASE_DIR / "logs"
