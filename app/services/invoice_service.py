@@ -480,6 +480,7 @@ def update_invoice_svc(
                     if b:
                         b.remaining_quantity += old_item.quantity
                     invoice_repo.delete(old_item)
+                invoice.items.clear()
                 invoice_repo.flush()
 
                 subtotal = Decimal("0")
@@ -495,16 +496,18 @@ def update_invoice_svc(
                         if not product_id:
                             raise HTTPException(status_code=400, detail="يجب توفير product_id لكل صنف في الفاتورة")
 
-                    quantity = Decimal(str(item.get("quantity", 0)))
-                    sell_price = item.get("sell_price") or item.get("unit_price")
-
-                    latest_price = batch_repo.get_highest_selling_price(product_id)
-                    if latest_price is None:
-                        raise HTTPException(status_code=400, detail=f"No batches available for product {product_id}")
-                    effective_price = Decimal(str(sell_price)) if sell_price is not None else latest_price
+                    sell_price = item.get("sell_price") if item.get("sell_price") is not None else item.get("unit_price")
+                    if sell_price is not None and str(sell_price).strip() != "":
+                        effective_price = Decimal(str(sell_price))
+                    else:
+                        latest_price = batch_repo.get_highest_selling_price(product_id)
+                        if latest_price is None:
+                            raise HTTPException(status_code=400, detail=f"No batches available for product {product_id}")
+                        effective_price = latest_price
                     if effective_price <= Decimal("0"):
                         raise HTTPException(status_code=400, detail=f"سعر البيع غير محدد أو صفر للمنتج ID {product_id}. يرجى إدخال سعر بيع صحيح.")
 
+                    quantity = Decimal(str(item.get("quantity", 0)))
                     if quantity <= Decimal("0"):
                         raise HTTPException(status_code=400, detail="الكمية يجب أن تكون أكبر من الصفر")
 
@@ -794,7 +797,7 @@ def process_return_svc(
                 ret_qty = Decimal(str(ret_item.get("quantity", 0)))
                 if ret_qty <= 0:
                     continue
-                orig_item_id = ret_item.get("invoice_item_id")
+                orig_item_id = ret_item.get("invoice_item_id") or ret_item.get("original_invoice_item_id")
                 orig_item = invoice_repo._db.execute(
                     select(InvoiceItem).where(InvoiceItem.id == orig_item_id)
                 ).scalar_one_or_none()
@@ -837,7 +840,7 @@ def process_return_svc(
             if ret_qty <= 0:
                 continue
 
-            orig_item_id = ret_item.get("invoice_item_id")
+            orig_item_id = ret_item.get("invoice_item_id") or ret_item.get("original_invoice_item_id")
             orig_item = invoice_repo._db.execute(
                 select(InvoiceItem).where(InvoiceItem.id == orig_item_id)
             ).scalar_one_or_none()

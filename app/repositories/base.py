@@ -413,6 +413,22 @@ class ProductRepository:
             )
         ).scalars().all())
 
+    def get_total_stock_for_products(self, product_ids: List[int]) -> dict:
+        if not product_ids:
+            return {}
+        rows = self._db.execute(
+            select(
+                StockBatch.product_id,
+                func.coalesce(func.sum(StockBatch.remaining_quantity), 0)
+            )
+            .where(
+                StockBatch.product_id.in_(product_ids),
+                StockBatch.tenant_id == self._tid
+            )
+            .group_by(StockBatch.product_id)
+        ).all()
+        return {row[0]: float(row[1]) for row in rows}
+
     def get_latest_batches_for_products(self, product_ids: List[int]) -> dict:
         if not product_ids:
             return {}

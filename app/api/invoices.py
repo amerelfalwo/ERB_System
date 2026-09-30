@@ -215,7 +215,7 @@ async def update_invoice(
         raise HTTPException(status_code=404, detail=ERR_INVOICE_NOT_FOUND)
     # update_invoice_svc commits changes and returns the refreshed invoice ORM object
     updated_invoice = update_invoice_svc(db, inv_repo, batch_repo, invoice, data, current_user.tenant_id)
-    invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:inventory", "reports:profit", "reports:net-profit", "parties", "products"])
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports", "reports:inventory", "reports:profit", "reports:net-profit", "parties", "products", "customers", "customer", "suppliers", "supplier", "invoices"])
     # Re-fetch fresh to ensure all relationships (batch→product) are loaded
     refreshed = inv_repo.get_by_id(updated_invoice["id"] if isinstance(updated_invoice, dict) else updated_invoice.id)
     return _invoice_out(refreshed, inv_repo, party_repo)
@@ -233,7 +233,7 @@ async def delete_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail=ERR_INVOICE_NOT_FOUND)
     delete_invoice_svc(inv_repo, batch_repo, invoice)
-    invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports:inventory", "reports:profit", "reports:net-profit", "parties", "products"])
+    invalidate_tenant_cache_sync(current_user.tenant_id, ["dashboard", "reports", "reports:inventory", "reports:profit", "reports:net-profit", "parties", "products", "customers", "customer", "suppliers", "supplier", "invoices"])
 
 
 @router.get("/{invoice_id}/payments", response_model=list[PaymentOut])

@@ -35,6 +35,7 @@ class ProductWithCostOut(BaseModel):
     purchase_price: Optional[float] = 0.0
     sell_price: Optional[float] = 0.0
     supplier_name: Optional[str] = None
+    total_stock: Optional[float] = 0.0
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -70,6 +71,7 @@ async def create_product(
         purchase_price=float(product.purchase_price or 0),
         sell_price=float(product.sell_price or 0),
         supplier_name=None,
+        total_stock=0.0,
     )
 
 
@@ -95,6 +97,7 @@ async def list_products(
     product_ids = [p.id for p in products]
     latest_batch_by_product = prod_repo.get_latest_batches_for_products(product_ids)
     supplier_dict = prod_repo.get_latest_suppliers_for_products(product_ids)
+    stock_dict = prod_repo.get_total_stock_for_products(product_ids)
 
     result = []
     for product in products:
@@ -116,7 +119,8 @@ async def list_products(
                 last_purchase_price=float(product.last_purchase_price or 0),
                 purchase_price=purchase_price,
                 sell_price=sell_price,
-                supplier_name=supplier_dict.get(product.id)
+                supplier_name=supplier_dict.get(product.id),
+                total_stock=stock_dict.get(product.id, 0.0),
             )
         )
 
