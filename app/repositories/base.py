@@ -381,7 +381,7 @@ class ProductRepository:
             select(Product).where(Product.id == product_id, Product.tenant_id == self._tid)
         ).scalar_one_or_none()
 
-    def list(self, skip: int = 0, limit: int = 100, search: Optional[str] = None, status: Optional[str] = None) -> List[Product]:
+    def list(self, skip: int = 0, limit: int = 100, search: Optional[str] = None, status: Optional[str] = None, sort: Optional[str] = None) -> List[Product]:
         q = select(Product).where(Product.tenant_id == self._tid)
         if search:
             from sqlalchemy import or_, case
@@ -403,8 +403,14 @@ class ProductRepository:
                 (name_norm.like(f"{norm_q}%"), 2),
                 else_=3
             )
-            q = q.order_by(rank_expr, Product.name.asc())
-        else:
+            if not sort:
+                q = q.order_by(rank_expr, Product.name.asc())
+
+        if sort == 'name_asc':
+            q = q.order_by(Product.name.asc())
+        elif sort == 'name_desc':
+            q = q.order_by(Product.name.desc())
+        elif not search:
             q = q.order_by(Product.id.desc())
 
         if status in ("in_stock", "out_of_stock"):

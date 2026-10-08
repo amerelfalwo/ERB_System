@@ -181,6 +181,8 @@ def allocate_batches_svc(
     for batch in batches:
         if remaining <= 0:
             break
+        if batch.remaining_quantity <= 0:
+            continue
         take = batch.remaining_quantity if batch.remaining_quantity <= remaining else remaining
         allocations.append((batch, take))
         remaining -= take
@@ -253,8 +255,11 @@ def create_purchase_invoice_svc(
             if not purchase_price or purchase_price <= 0:
                 raise HTTPException(status_code=400, detail=f"سعر الشراء غير محدد أو صفر للمنتج ID {item.product_id}. يرجى إدخال سعر شراء صحيح.")
 
-            total_stock = batch_repo.get_total_stock(item.product_id)
             new_stock = Decimal(str(item.quantity))
+            if new_stock <= Decimal("0"):
+                raise HTTPException(status_code=400, detail="الكمية يجب أن تكون أكبر من الصفر")
+
+            total_stock = batch_repo.get_total_stock(item.product_id)
             current_avg = product.average_cost if product.average_cost else Decimal("0")
             new_cost = purchase_price
             
@@ -543,55 +548,100 @@ def update_invoice_svc(
 
             elif invoice.invoice_type == INVOICE_TYPE_PURCHASE:
                 old_map = {str(item.batch_id): item for item in invoice.items}
-                if len(new_items) != len(invoice.items):
-                    raise HTTPException(status_code=400, detail=ERR_CANNOT_MODIFY_PURCHASE_COUNT)
+
+                new_batch_ids = [str(item.get("batch_id")) for item in new_items if item.get("batch_id")]
+                for old_batch_id_str, old_item in old_map.items():
+                    if old_batch_id_str not in new_batch_ids:
+                        batch = db.execute(select(StockBatch).where(StockBatch.id == int(old_batch_id_str), StockBatch.tenant_id == tenant_id)).scalar_one_or_none()
+                        if batch:
+                            sold_qty = batch.initial_quantity - batch.remaining_quantity
+                            if sold_qty > 0:
+                                raise HTTPException(status_code=400, detail=f"لا يمكن حذف الصنف (الدفعة #{batch.id}) لأنه تم بيع جزء منه بالفعل.")
+                            db.delete(batch)
+                        invoice_repo.delete(old_item)
 
                 subtotal = Decimal("0")
                 total_item_discount = Decimal("0")
                 total_item_tax = Decimal("0")
                 for item_data in new_items:
-                    batch_id = str(item_data.get("batch_id"))
+                    batch_id_str = str(item_data.get("batch_id")) if item_data.get("batch_id") else None
                     new_qty = Decimal(str(item_data.get("quantity", 0)))
                     new_price = Decimal(str(item_data.get("unit_price", 0)))
                     new_sell_price = Decimal(str(item_data.get("sell_price", 0)))
                     discount = Decimal(str(item_data.get("discount", 0)))
                     tax = Decimal(str(item_data.get("tax", 0)))
                     
-                    old_item = old_map.get(batch_id)
-                    if not old_item:
-                        raise HTTPException(status_code=400, detail=f"البند (دفعة #{batch_id}) غير موجود في الفاتورة")
-                    batch = db.execute(select(StockBatch).where(StockBatch.id == int(batch_id), StockBatch.tenant_id == tenant_id)).scalar_one_or_none()
-                    if not batch:
-                        raise HTTPException(status_code=404, detail=f"الدفعة #{batch_id} غير موجودة")
-                    sold_qty = batch.initial_quantity - batch.remaining_quantity
-                    
                     if new_qty <= 0:
                         raise HTTPException(status_code=400, detail="الكمية يجب أن تكون أكبر من الصفر")
                     if new_price <= 0:
                         raise HTTPException(status_code=400, detail="سعر الشراء يجب أن يكون أكبر من الصفر")
                         
-                    if new_qty < sold_qty:
-                        raise HTTPException(status_code=400, detail=f"الكمية الجديدة ({new_qty}) أقل من الكمية المباعة فعلاً ({sold_qty})")
-                    batch.initial_quantity = new_qty
-                    batch.remaining_quantity = new_qty - sold_qty
-                    batch.purchase_price = new_price
-                    old_item.quantity = new_qty
-                    old_item.unit_price = new_price
-                    old_item.purchase_price = new_price
-                    old_item.discount = discount
-                    old_item.tax = tax
-                    
-                    if new_sell_price > 0:
-                        batch.current_selling_price = new_sell_price
-                        old_item.sell_price = new_sell_price
-                    
-                    # Update product's last purchase price and sell price
-                    if batch.product:
-                        batch.product.last_purchase_price = new_price
-                        batch.product.purchase_price = new_price
-                        if new_sell_price > 0:
-                            batch.product.sell_price = new_sell_price
+                    if batch_id_str and batch_id_str in old_map:
+                        old_item = old_map.get(batch_id_str)
+                        batch = db.execute(select(StockBatch).where(StockBatch.id == int(batch_id_str), StockBatch.tenant_id == tenant_id)).scalar_one_or_none()
+                        if not batch:
+                            raise HTTPException(status_code=404, detail=f"الدفعة #{batch_id_str} غير موجودة")
+                        sold_qty = batch.initial_quantity - batch.remaining_quantity
                         
+                        if new_qty < sold_qty:
+                            raise HTTPException(status_code=400, detail=f"الكمية الجديدة ({new_qty}) أقل من الكمية المباعة فعلاً ({sold_qty})")
+                        batch.initial_quantity = new_qty
+                        batch.remaining_quantity = new_qty - sold_qty
+                        batch.purchase_price = new_price
+                        old_item.quantity = new_qty
+                        old_item.unit_price = new_price
+                        old_item.purchase_price = new_price
+                        old_item.discount = discount
+                        old_item.tax = tax
+                        
+                        if new_sell_price > 0:
+                            batch.current_selling_price = new_sell_price
+                            old_item.sell_price = new_sell_price
+                        
+                        if batch.product:
+                            batch.product.last_purchase_price = new_price
+                            batch.product.purchase_price = new_price
+                            if new_sell_price > 0:
+                                batch.product.sell_price = new_sell_price
+                    else:
+                        product_id = item_data.get("product_id")
+                        if not product_id and batch_id_str:
+                            b = db.execute(select(StockBatch).where(StockBatch.id == int(batch_id_str))).scalar_one_or_none()
+                            if b: product_id = b.product_id
+                        if not product_id:
+                            raise HTTPException(status_code=400, detail="يجب توفير المنتج للأصناف الجديدة")
+                        
+                        new_batch = StockBatch(
+                            tenant_id=tenant_id,
+                            product_id=product_id,
+                            party_id=invoice.party_id,
+                            initial_quantity=new_qty,
+                            remaining_quantity=new_qty,
+                            purchase_price=new_price,
+                            current_selling_price=new_sell_price if new_sell_price > 0 else None,
+                        )
+                        db.add(new_batch)
+                        db.flush()
+                        
+                        new_item = InvoiceItem(
+                            invoice_id=invoice.id,
+                            batch_id=new_batch.id,
+                            quantity=new_qty,
+                            unit_price=new_price,
+                            purchase_price=new_price,
+                            sell_price=new_sell_price if new_sell_price > 0 else new_price,
+                            discount=discount,
+                            tax=tax,
+                        )
+                        invoice_repo.add(new_item)
+                        
+                        product = db.execute(select(Product).where(Product.id == int(product_id), Product.tenant_id == tenant_id)).scalar_one_or_none()
+                        if product:
+                            product.last_purchase_price = new_price
+                            product.purchase_price = new_price
+                            if new_sell_price > 0:
+                                product.sell_price = new_sell_price
+
                     subtotal += new_qty * new_price
                     total_item_discount += discount
                     total_item_tax += tax
@@ -609,6 +659,10 @@ def update_invoice_svc(
                 for item_data in new_items:
                     batch_id = str(item_data.get("batch_id") or "")
                     new_qty = Decimal(str(item_data.get("quantity", 0)))
+                    
+                    if new_qty <= Decimal("0"):
+                        raise HTTPException(status_code=400, detail="الكمية يجب أن تكون أكبر من الصفر")
+
                     new_price = Decimal(str(item_data.get("unit_price", 0)))
                     discount = Decimal(str(item_data.get("discount", 0)))
                     tax = Decimal(str(item_data.get("tax", 0)))

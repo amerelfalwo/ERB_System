@@ -45,23 +45,64 @@ async def list_customers(
     skip: int = 0,
     limit: int = 100,
     search: str | None = None,
+    sort: str | None = None,
+    balance_filter: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     search_str = (search or "").strip()
-    cache_key_suffix = f"customers_list_{skip}_{limit}_{search_str}"
+    cache_key_suffix = f"customers_list_{skip}_{limit}_{search_str}_{sort}_{balance_filter}"
     cached_data = await get_cache(current_user.tenant_id, cache_key_suffix)
     if cached_data:
         return cached_data if isinstance(cached_data, list) else json.loads(cached_data)
 
-    query = select(Party).where(
+    from sqlalchemy import case, or_
+    from app.api.parties import _norm_arabic_str, _sql_norm_arabic
+
+    # Subqueries for balance calculation
+    inv_sq = select(
+        Invoice.party_id,
+        func.coalesce(
+            func.sum(case((Invoice.invoice_type == InvoiceType.SELL, Invoice.total_amount), else_=0)), 0
+        ).label("sell_total"),
+        func.coalesce(
+            func.sum(case((Invoice.invoice_type == InvoiceType.SELL_RETURN, Invoice.total_amount), else_=0)), 0
+        ).label("return_total")
+    ).where(
+        Invoice.tenant_id == current_user.tenant_id
+    ).group_by(Invoice.party_id).subquery()
+
+    pay_sq = select(
+        Payment.party_id,
+        func.coalesce(func.sum(Payment.amount), 0).label("pay_total")
+    ).group_by(Payment.party_id).subquery()
+
+    calc_balance_expr = (
+        func.coalesce(Party.initial_balance, 0)
+        + func.coalesce(inv_sq.c.sell_total, 0)
+        - func.coalesce(inv_sq.c.return_total, 0)
+        - func.coalesce(pay_sq.c.pay_total, 0)
+    )
+
+    query = select(Party, calc_balance_expr.label('calc_balance')).outerjoin(
+        inv_sq, Party.id == inv_sq.c.party_id
+    ).outerjoin(
+        pay_sq, Party.id == pay_sq.c.party_id
+    ).where(
         Party.tenant_id == current_user.tenant_id,
         Party.party_type == PartyType.CLIENT,
     )
 
+    # Balance Filter
+    if balance_filter == 'has_debt':
+        query = query.where(calc_balance_expr > 0)
+    elif balance_filter == 'has_credit':
+        query = query.where(calc_balance_expr < 0)
+    elif balance_filter == 'settled':
+        query = query.where(calc_balance_expr == 0)
+
+    # Search
     if search_str:
-        from sqlalchemy import or_, case
-        from app.api.parties import _norm_arabic_str, _sql_norm_arabic
         norm_q = _norm_arabic_str(search_str)
         pattern = f"%{search_str}%"
         norm_pattern = f"%{norm_q}%"
@@ -82,66 +123,73 @@ async def list_customers(
             (Party.phone.like(f"{search_str}%"), 2),
             else_=3
         )
-        query = query.order_by(rank_expr, Party.name.asc())
-    else:
+        if not sort:
+            query = query.order_by(rank_expr, Party.name.asc())
+
+    # Sorting
+    if sort == 'balance-high':
+        query = query.order_by(calc_balance_expr.desc())
+    elif sort == 'balance-low':
+        query = query.order_by(calc_balance_expr.asc())
+    elif sort == 'a-z':
+        query = query.order_by(Party.name.asc())
+    elif sort == 'z-a':
+        query = query.order_by(Party.name.desc())
+    elif not search_str:
         query = query.order_by(Party.id.desc())
 
-    parties = db.execute(
-        query.offset(skip).limit(limit)
-    ).scalars().all()
-    if parties:
-        party_ids = [p.id for p in parties]
-        balances = get_parties_balances(db, party_ids, current_user.tenant_id)
+    rows = db.execute(query.offset(skip).limit(limit)).all()
 
-        sell_invoices = db.execute(
-            select(Invoice).options(
-                selectinload(Invoice.items).joinedload(InvoiceItem.batch)
-            ).where(
-                Invoice.party_id.in_(party_ids),
-                Invoice.invoice_type == InvoiceType.SELL,
-                Invoice.tenant_id == current_user.tenant_id
-            )
-        ).scalars().unique().all()
-        
-        item_ids = [item.id for inv in sell_invoices for item in inv.items]
-        returned_qty_map = {}
-        if item_ids:
-            rows = db.execute(
-                select(InvoiceItem.original_invoice_item_id, func.sum(InvoiceItem.quantity))
-                .where(InvoiceItem.original_invoice_item_id.in_(item_ids))
-                .group_by(InvoiceItem.original_invoice_item_id)
-            ).all()
-            returned_qty_map = {orig_id: qty for orig_id, qty in rows if orig_id}
+    parties = []
+    if rows:
+        party_ids = [r.Party.id for r in rows]
 
-        profits_map = {p.id: Decimal("0") for p in parties}
-        for inv in sell_invoices:
-            inv_profit = Decimal("0")
-            for item in inv.items:
-                cost = item.batch.purchase_price if item.batch and item.batch.purchase_price is not None else (
-                    item.purchase_price if item.purchase_price is not None else Decimal("0")
-                )
-                sale = item.sell_price if item.sell_price is not None else (item.unit_price if item.unit_price is not None else Decimal("0"))
-                qty = item.quantity if item.quantity is not None else Decimal("0")
-                returned_qty = returned_qty_map.get(item.id, Decimal("0"))
-                effective_qty = max(Decimal("0"), qty - returned_qty)
-                inv_profit += (sale - cost) * effective_qty
-            profits_map[inv.party_id] += inv_profit
+        # Optimized Profit Calculation for paginated parties
+        returned_qty_sq = select(
+            InvoiceItem.original_invoice_item_id.label("orig_id"),
+            func.sum(InvoiceItem.quantity).label("ret_qty")
+        ).where(
+            InvoiceItem.original_invoice_item_id.is_not(None)
+        ).group_by(
+            InvoiceItem.original_invoice_item_id
+        ).subquery()
 
-        for p in parties:
-            p.calculated_balance = balances.get(p.id, Decimal("0"))
-            p.total_profit = profits_map.get(p.id, Decimal("0"))
-            # Basic status mapping
+        profit_query = select(
+            Invoice.party_id,
+            func.sum(
+                (func.coalesce(InvoiceItem.sell_price, InvoiceItem.unit_price, 0) - 
+                 func.coalesce(StockBatch.purchase_price, InvoiceItem.purchase_price, 0)) * 
+                func.greatest(0, func.coalesce(InvoiceItem.quantity, 0) - func.coalesce(returned_qty_sq.c.ret_qty, 0))
+            ).label("profit")
+        ).select_from(Invoice) \
+         .join(InvoiceItem, Invoice.id == InvoiceItem.invoice_id) \
+         .outerjoin(StockBatch, InvoiceItem.batch_id == StockBatch.id) \
+         .outerjoin(returned_qty_sq, InvoiceItem.id == returned_qty_sq.c.orig_id) \
+         .where(
+             Invoice.party_id.in_(party_ids),
+             Invoice.invoice_type == InvoiceType.SELL,
+             Invoice.tenant_id == current_user.tenant_id
+         ).group_by(Invoice.party_id)
+
+        profit_rows = db.execute(profit_query).all()
+        profits_map = {row.party_id: row.profit for row in profit_rows}
+
+        for r in rows:
+            p = r.Party
+            p.calculated_balance = Decimal(str(r.calc_balance or 0))
+            p.total_profit = Decimal(str(profits_map.get(p.id, 0)))
+            
             if p.calculated_balance > 0:
                 p.payment_status = "عليه ديون"
             elif p.calculated_balance < 0:
                 p.payment_status = "له مستحقات"
             else:
                 p.payment_status = "خالص"
+            
+            parties.append(p)
 
-    # Serialize and cache
     from fastapi.encoders import jsonable_encoder
     result = jsonable_encoder(parties)
-    # The cache utility handles JSON serialization implicitly, but we enforce it for safe decimals
     await set_cache(current_user.tenant_id, cache_key_suffix, result, ttl=60)
     
     return parties

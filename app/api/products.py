@@ -81,16 +81,17 @@ async def list_products(
     limit: int = 100,
     search: Optional[str] = None,
     status: Optional[str] = None,
+    sort: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    cache_key = f"products:list:{skip}:{limit}:{search or ''}:{status or ''}"
+    cache_key = f"products:list:{skip}:{limit}:{search or ''}:{status or ''}:{sort or ''}"
     cached = await get_cache(current_user.tenant_id, cache_key)
     if cached is not None:
         return cached
 
     prod_repo = ProductRepository(db, current_user.tenant_id)
-    products = prod_repo.list(skip=skip, limit=limit, search=search, status=status)
+    products = prod_repo.list(skip=skip, limit=limit, search=search, status=status, sort=sort)
     if not products:
         return []
 

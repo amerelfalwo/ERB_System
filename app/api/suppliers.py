@@ -43,23 +43,64 @@ async def list_suppliers(
     skip: int = 0,
     limit: int = 100,
     search: str | None = None,
+    sort: str | None = None,
+    balance_filter: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     search_str = (search or "").strip()
-    cache_key_suffix = f"suppliers_list_{skip}_{limit}_{search_str}"
+    cache_key_suffix = f"suppliers_list_{skip}_{limit}_{search_str}_{sort}_{balance_filter}"
     cached_data = await get_cache(current_user.tenant_id, cache_key_suffix)
     if cached_data:
         return cached_data if isinstance(cached_data, list) else json.loads(cached_data)
 
-    query = select(Party).where(
+    from sqlalchemy import case, or_
+    from app.api.parties import _norm_arabic_str, _sql_norm_arabic
+
+    # Subqueries for balance calculation
+    inv_sq = select(
+        Invoice.party_id,
+        func.coalesce(
+            func.sum(case((Invoice.invoice_type == InvoiceType.PURCHASE, Invoice.total_amount), else_=0)), 0
+        ).label("purchase_total"),
+        func.coalesce(
+            func.sum(case((Invoice.invoice_type == InvoiceType.PURCHASE_RETURN, Invoice.total_amount), else_=0)), 0
+        ).label("return_total")
+    ).where(
+        Invoice.tenant_id == current_user.tenant_id
+    ).group_by(Invoice.party_id).subquery()
+
+    pay_sq = select(
+        Payment.party_id,
+        func.coalesce(func.sum(Payment.amount), 0).label("pay_total")
+    ).group_by(Payment.party_id).subquery()
+
+    calc_balance_expr = (
+        func.coalesce(Party.initial_balance, 0)
+        + func.coalesce(inv_sq.c.purchase_total, 0)
+        - func.coalesce(inv_sq.c.return_total, 0)
+        - func.coalesce(pay_sq.c.pay_total, 0)
+    )
+
+    query = select(Party, calc_balance_expr.label('calc_balance')).outerjoin(
+        inv_sq, Party.id == inv_sq.c.party_id
+    ).outerjoin(
+        pay_sq, Party.id == pay_sq.c.party_id
+    ).where(
         Party.tenant_id == current_user.tenant_id,
         Party.party_type == PartyType.SUPPLIER,
     )
 
+    # Balance Filter
+    if balance_filter == 'has_debt':
+        query = query.where(calc_balance_expr > 0)
+    elif balance_filter == 'has_credit':
+        query = query.where(calc_balance_expr < 0)
+    elif balance_filter == 'settled':
+        query = query.where(calc_balance_expr == 0)
+
+    # Search
     if search_str:
-        from sqlalchemy import or_, case
-        from app.api.parties import _norm_arabic_str, _sql_norm_arabic
         norm_q = _norm_arabic_str(search_str)
         pattern = f"%{search_str}%"
         norm_pattern = f"%{norm_q}%"
@@ -80,19 +121,30 @@ async def list_suppliers(
             (Party.phone.like(f"{search_str}%"), 2),
             else_=3
         )
-        query = query.order_by(rank_expr, Party.name.asc())
-    else:
+        if not sort:
+            query = query.order_by(rank_expr, Party.name.asc())
+
+    # Sorting
+    if sort == 'balance-high':
+        query = query.order_by(calc_balance_expr.desc())
+    elif sort == 'balance-low':
+        query = query.order_by(calc_balance_expr.asc())
+    elif sort == 'a-z':
+        query = query.order_by(Party.name.asc())
+    elif sort == 'z-a':
+        query = query.order_by(Party.name.desc())
+    elif not search_str:
         query = query.order_by(Party.id.desc())
 
-    parties = db.execute(
-        query.offset(skip).limit(limit)
-    ).scalars().all()
-    if parties:
-        party_ids = [p.id for p in parties]
-        balances = get_parties_balances(db, party_ids, current_user.tenant_id)
-        for p in parties:
-            p.calculated_balance = balances.get(p.id, Decimal("0"))
-            
+    rows = db.execute(query.offset(skip).limit(limit)).all()
+
+    parties = []
+    if rows:
+        for r in rows:
+            p = r.Party
+            p.calculated_balance = Decimal(str(r.calc_balance or 0))
+            parties.append(p)
+
     from fastapi.encoders import jsonable_encoder
     result = jsonable_encoder(parties)
     await set_cache(current_user.tenant_id, cache_key_suffix, result, ttl=60)
