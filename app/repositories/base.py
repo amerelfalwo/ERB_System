@@ -384,7 +384,29 @@ class ProductRepository:
     def list(self, skip: int = 0, limit: int = 100, search: Optional[str] = None, status: Optional[str] = None) -> List[Product]:
         q = select(Product).where(Product.tenant_id == self._tid)
         if search:
-            q = q.where(Product.name.ilike(f"%{search.strip()}%"))
+            from sqlalchemy import or_, case
+            from app.api.parties import _norm_arabic_str, _sql_norm_arabic
+            search_str = search.strip()
+            norm_q = _norm_arabic_str(search_str)
+            pattern = f"%{search_str}%"
+            norm_pattern = f"%{norm_q}%"
+            name_norm = _sql_norm_arabic(Product.name)
+            
+            q = q.where(
+                or_(
+                    Product.name.ilike(pattern),
+                    name_norm.like(norm_pattern)
+                )
+            )
+            rank_expr = case(
+                (name_norm == norm_q, 1),
+                (name_norm.like(f"{norm_q}%"), 2),
+                else_=3
+            )
+            q = q.order_by(rank_expr, Product.name.asc())
+        else:
+            q = q.order_by(Product.id.desc())
+
         if status in ("in_stock", "out_of_stock"):
             subq = select(StockBatch.product_id).where(StockBatch.remaining_quantity > 0)
             if self._tid is not None:

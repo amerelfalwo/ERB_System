@@ -44,19 +44,50 @@ def create_customer(
 async def list_customers(
     skip: int = 0,
     limit: int = 100,
+    search: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    cache_key_suffix = f"customers_list_{skip}_{limit}"
+    search_str = (search or "").strip()
+    cache_key_suffix = f"customers_list_{skip}_{limit}_{search_str}"
     cached_data = await get_cache(current_user.tenant_id, cache_key_suffix)
     if cached_data:
         return cached_data if isinstance(cached_data, list) else json.loads(cached_data)
 
+    query = select(Party).where(
+        Party.tenant_id == current_user.tenant_id,
+        Party.party_type == PartyType.CLIENT,
+    )
+
+    if search_str:
+        from sqlalchemy import or_, case
+        from app.api.parties import _norm_arabic_str, _sql_norm_arabic
+        norm_q = _norm_arabic_str(search_str)
+        pattern = f"%{search_str}%"
+        norm_pattern = f"%{norm_q}%"
+        name_norm = _sql_norm_arabic(Party.name)
+
+        query = query.where(
+            or_(
+                Party.name.ilike(pattern),
+                name_norm.like(norm_pattern),
+                Party.phone.ilike(pattern),
+                Party.address.ilike(pattern),
+            )
+        )
+        rank_expr = case(
+            (name_norm == norm_q, 1),
+            (Party.phone == search_str, 1),
+            (name_norm.like(f"{norm_q}%"), 2),
+            (Party.phone.like(f"{search_str}%"), 2),
+            else_=3
+        )
+        query = query.order_by(rank_expr, Party.name.asc())
+    else:
+        query = query.order_by(Party.id.desc())
+
     parties = db.execute(
-        select(Party).where(
-            Party.tenant_id == current_user.tenant_id,
-            Party.party_type == PartyType.CLIENT,
-        ).offset(skip).limit(limit)
+        query.offset(skip).limit(limit)
     ).scalars().all()
     if parties:
         party_ids = [p.id for p in parties]
