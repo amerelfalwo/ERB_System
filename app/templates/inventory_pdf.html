@@ -14,6 +14,12 @@
     @font-face {
       font-family: 'Readex Pro';
       font-style: normal;
+      font-weight: 600;
+      src: url('{{ fonts_dir }}/ReadexPro-Bold.ttf') format('truetype');
+    }
+    @font-face {
+      font-family: 'Readex Pro';
+      font-style: normal;
       font-weight: 700;
       src: url('{{ fonts_dir }}/ReadexPro-Bold.ttf') format('truetype');
     }
@@ -21,25 +27,24 @@
 
     @page {
       size: A4 portrait;
-      margin: 12mm 10mm 14mm 10mm;
+      margin: 12mm 12mm 14mm 12mm;
       @bottom-right {
-        content: "{{ tenant_name }} - تقرير المخزون";
+        content: "{{ tenant_name }}";
         font-family: 'Readex Pro', sans-serif;
-        font-size: 8.5pt;
-        color: #64748b;
+        font-size: 8pt;
+        color: #94a3b8;
       }
       @bottom-center {
         content: "صفحة " counter(page) " من " counter(pages);
         font-family: 'Readex Pro', sans-serif;
         font-size: 8.5pt;
-        color: #475569;
-        font-weight: bold;
+        color: #64748b;
       }
       @bottom-left {
         content: "{{ generation_date }}";
         font-family: 'Readex Pro', sans-serif;
-        font-size: 8.5pt;
-        color: #64748b;
+        font-size: 8pt;
+        color: #94a3b8;
       }
     }
 
@@ -50,124 +55,123 @@
     }
 
     body {
-      font-family: 'Readex Pro', Arial, sans-serif;
+      font-family: 'Readex Pro', 'Segoe UI', Tahoma, Arial, sans-serif;
       direction: rtl;
       text-align: right;
-      color: #0f172a;
+      color: #1e293b;
       background-color: #ffffff;
       margin: 0;
       padding: 0;
-      font-size: 10pt;
+      font-size: 9.5pt;
       line-height: 1.4;
     }
 
-    /* ── Header ─────────────────────────────────────────── */
+    /* ── Simple Clean Header ───────────────────────────────── */
+    .header {
+      width: 100%;
+      margin-bottom: 14px;
+      padding-bottom: 10px;
+      border-bottom: 1.5px solid #e2e8f0;
+    }
+
     .header-table {
       width: 100%;
       border-collapse: collapse;
-      margin-bottom: 12px;
-      border-bottom: 2px solid #0284c7;
-      padding-bottom: 8px;
     }
 
     .header-table td {
       vertical-align: middle;
-      padding: 4px 6px;
+      padding: 0;
     }
 
-    .tenant-info {
+    .brand-side {
       text-align: right;
       width: 40%;
     }
 
-    .tenant-title {
-      font-size: 16pt;
+    .brand-name {
+      font-size: 14pt;
       font-weight: 700;
       color: #0f172a;
-      margin: 0 0 4px 0;
+      margin: 0 0 2px 0;
     }
 
-    .tenant-sub {
-      font-size: 9pt;
+    .brand-sub {
+      font-size: 8.5pt;
       color: #64748b;
       margin: 0;
     }
 
-    .report-badge-container {
+    .title-side {
       text-align: center;
       width: 35%;
     }
 
-    .report-main-title {
+    .doc-title {
       font-size: 13pt;
       font-weight: 700;
-      color: #0284c7;
-      margin: 0 0 4px 0;
+      color: #0f172a;
+      margin: 0 0 2px 0;
     }
 
-    .badge {
+    .filter-label {
       display: inline-block;
-      padding: 3px 10px;
-      border-radius: 12px;
-      font-size: 8.5pt;
-      font-weight: 700;
-    }
-
-    .badge-primary { background-color: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; }
-    .badge-success { background-color: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
-    .badge-warning { background-color: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
-    .badge-danger  { background-color: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
-
-    .meta-info {
-      text-align: left;
-      width: 25%;
       font-size: 8.5pt;
       color: #475569;
+      background-color: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      padding: 2px 10px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+
+    .meta-side {
+      text-align: left;
+      width: 25%;
+      font-size: 8pt;
+      color: #64748b;
       line-height: 1.5;
     }
 
     .tenant-logo {
-      max-height: 55px;
-      max-width: 140px;
+      max-height: 48px;
+      max-width: 130px;
       object-fit: contain;
+      margin-bottom: 4px;
     }
 
-    /* ── KPI Summary Cards ───────────────────────────────── */
-    .kpi-table {
+    /* ── Simple Compact Summary Bar ────────────────────────── */
+    .summary-strip {
       width: 100%;
-      border-collapse: separate;
-      border-spacing: 8px 0;
-      margin-bottom: 14px;
-    }
-
-    .kpi-card {
       background-color: #f8fafc;
       border: 1px solid #e2e8f0;
-      border-radius: 8px;
-      padding: 8px 10px;
+      border-radius: 6px;
+      padding: 7px 12px;
+      margin-bottom: 12px;
+      display: table;
+    }
+
+    .summary-cell {
+      display: table-cell;
       text-align: center;
       vertical-align: middle;
-      width: 25%;
+      font-size: 8.5pt;
+      color: #475569;
+      padding: 2px 8px;
+      border-left: 1px solid #e2e8f0;
     }
 
-    .kpi-label {
-      font-size: 8pt;
-      color: #64748b;
-      font-weight: 400;
-      margin-bottom: 3px;
+    .summary-cell:first-child {
+      border-left: none;
     }
 
-    .kpi-value {
-      font-size: 11.5pt;
-      font-weight: 700;
+    .summary-cell strong {
       color: #0f172a;
+      font-size: 9.5pt;
+      margin-right: 4px;
     }
 
-    .kpi-value.accent {
-      color: #0284c7;
-    }
-
-    /* ── Data Table ──────────────────────────────────────── */
+    /* ── Clean Simple Data Table ───────────────────────────── */
     .inventory-table {
       width: 100%;
       border-collapse: collapse;
@@ -179,12 +183,15 @@
     }
 
     .inventory-table thead th {
-      background-color: #0f172a;
-      color: #ffffff;
+      background-color: #f1f5f9;
+      color: #334155;
       font-size: 8.5pt;
       font-weight: 700;
       padding: 7px 8px;
-      border: 1px solid #0f172a;
+      border-top: 1px solid #cbd5e1;
+      border-bottom: 2px solid #94a3b8;
+      border-left: 1px solid #e2e8f0;
+      border-right: 1px solid #e2e8f0;
       text-align: center;
     }
 
@@ -201,57 +208,54 @@
     }
 
     .inventory-table tbody tr:nth-child(even) {
-      background-color: #f8fafc;
-    }
-
-    .inventory-table tbody tr:hover {
-      background-color: #f1f5f9;
+      background-color: #fafbfc;
     }
 
     .inventory-table td {
       padding: 6px 8px;
-      border: 1px solid #cbd5e1;
+      border: 1px solid #e2e8f0;
       font-size: 9pt;
       vertical-align: middle;
+      color: #334155;
     }
 
     .col-idx {
-      width: 4%;
+      width: 5%;
       text-align: center;
       color: #64748b;
-      font-weight: 700;
+      font-size: 8.5pt;
     }
 
     .col-name {
-      width: 38%;
+      width: 41%;
       text-align: right;
-      font-weight: 700;
+      font-weight: 600;
       color: #0f172a;
     }
 
     .col-qty {
-      width: 13%;
+      width: 12%;
       text-align: center;
       font-weight: 700;
-      font-size: 9.5pt;
+      color: #0f172a;
     }
 
     .col-purch {
-      width: 15%;
+      width: 14%;
       text-align: left;
       direction: ltr;
       font-family: 'Readex Pro', sans-serif;
     }
 
     .col-sell {
-      width: 15%;
+      width: 14%;
       text-align: left;
       direction: ltr;
       font-family: 'Readex Pro', sans-serif;
     }
 
     .col-total {
-      width: 15%;
+      width: 14%;
       text-align: left;
       direction: ltr;
       font-weight: 700;
@@ -259,18 +263,10 @@
       font-family: 'Readex Pro', sans-serif;
     }
 
-    /* Status Pills in Table */
-    .status-pill {
-      display: inline-block;
-      font-size: 7.5pt;
-      padding: 1px 6px;
-      border-radius: 4px;
-      margin-right: 4px;
+    .dash {
+      color: #94a3b8;
       font-weight: normal;
     }
-    .status-in_stock { color: #166534; background-color: #dcfce7; }
-    .status-low_stock { color: #9a3412; background-color: #ffedd5; }
-    .status-out_of_stock { color: #991b1b; background-color: #fee2e2; }
 
     /* ── Table Footer Totals ─────────────────────────────── */
     .inventory-table tfoot {
@@ -278,81 +274,75 @@
     }
 
     .inventory-table tfoot tr td {
-      background-color: #e2e8f0;
-      border: 1px solid #94a3b8;
+      background-color: #f8fafc;
+      border-top: 2px solid #64748b;
+      border-bottom: 1.5px solid #64748b;
+      border-left: 1px solid #cbd5e1;
+      border-right: 1px solid #cbd5e1;
       font-weight: 700;
-      font-size: 9.5pt;
+      font-size: 9pt;
       color: #0f172a;
-      padding: 8px 8px;
+      padding: 7px 8px;
     }
 
     .empty-state {
       text-align: center;
-      padding: 30px;
+      padding: 25px;
       color: #64748b;
-      font-size: 11pt;
+      font-size: 9.5pt;
     }
   </style>
 </head>
 <body>
 
   <!-- Header -->
-  <table class="header-table">
-    <tr>
-      <td class="tenant-info">
-        {% if tenant_logo_url %}
-          <img src="{{ tenant_logo_url }}" class="tenant-logo" alt="Logo" /><br/>
-        {% endif %}
-        <div class="tenant-title">{{ tenant_name }}</div>
-        <p class="tenant-sub">نظام إدارة المخزون والمستودعات</p>
-        {% if tenant_phone %}<p class="tenant-sub">هاتف: {{ tenant_phone }}</p>{% endif %}
-      </td>
+  <div class="header">
+    <table class="header-table">
+      <tr>
+        <td class="brand-side">
+          {% if tenant_logo_url %}
+            <img src="{{ tenant_logo_url }}" class="tenant-logo" alt="Logo" /><br/>
+          {% endif %}
+          <div class="brand-name">{{ tenant_name }}</div>
+          {% if tenant_phone %}<p class="brand-sub">هاتف: {{ tenant_phone }}</p>{% endif %}
+        </td>
 
-      <td class="report-badge-container">
-        <div class="report-main-title">{{ report_title }}</div>
-        <span class="badge {{ badge_class }}">{{ report_filter_label }}</span>
-        {% if search_term %}
-          <div style="font-size: 8pt; color: #64748b; margin-top: 4px;">نتائج البحث عن: "{{ search_term }}"</div>
-        {% endif %}
-      </td>
+        <td class="title-side">
+          <div class="doc-title">{{ report_title }}</div>
+          <span class="filter-label">{{ report_filter_label }}</span>
+          {% if search_term %}
+            <div style="font-size: 8pt; color: #64748b; margin-top: 3px;">البحث: "{{ search_term }}"</div>
+          {% endif %}
+        </td>
 
-      <td class="meta-info">
-        <div><strong>تاريخ التقرير:</strong></div>
-        <div>{{ generation_date }}</div>
-        <div style="margin-top: 4px;"><strong>إجمالي الأصناف:</strong> {{ total_items_count }} صنف</div>
-      </td>
-    </tr>
-  </table>
+        <td class="meta-side">
+          <div><strong>التاريخ:</strong> {{ generation_date }}</div>
+          <div style="margin-top: 2px;"><strong>عدد الأصناف:</strong> {{ total_items_count }} صنف</div>
+        </td>
+      </tr>
+    </table>
+  </div>
 
-  <!-- KPI Summary Cards -->
-  <table class="kpi-table">
-    <tr>
-      <td class="kpi-card">
-        <div class="kpi-label">عدد الأصناف في التقرير</div>
-        <div class="kpi-value">{{ total_items_count }}</div>
-      </td>
-      <td class="kpi-card">
-        <div class="kpi-label">إجمالي الكميات (وحدة/قطعة)</div>
-        <div class="kpi-value">{{ total_quantity }}</div>
-      </td>
-      <td class="kpi-card">
-        <div class="kpi-label">إجمالي قيمة المخزون (شراء)</div>
-        <div class="kpi-value accent">{{ total_inventory_value }}</div>
-      </td>
-      <td class="kpi-card">
-        <div class="kpi-label">نطاق التقرير</div>
-        <div class="kpi-value" style="font-size: 10pt;">{{ report_filter_label }}</div>
-      </td>
-    </tr>
-  </table>
+  <!-- Compact Summary Strip -->
+  <div class="summary-strip">
+    <div class="summary-cell">
+      الأصناف: <strong>{{ total_items_count }}</strong>
+    </div>
+    <div class="summary-cell">
+      إجمالي الكميات: <strong>{{ total_quantity }}</strong>
+    </div>
+    <div class="summary-cell">
+      إجمالي القيمة: <strong>{{ total_inventory_value }}</strong>
+    </div>
+  </div>
 
-  <!-- Main Table -->
+  <!-- Clean Data Table -->
   <table class="inventory-table">
     <thead>
       <tr>
         <th class="col-idx">#</th>
         <th class="col-name text-right">اسم الصنف / المنتج</th>
-        <th class="col-qty">الكمية المتاحة</th>
+        <th class="col-qty">الكمية</th>
         <th class="col-purch text-left">سعر الشراء</th>
         <th class="col-sell text-left">سعر البيع</th>
         <th class="col-total text-left">إجمالي القيمة</th>
@@ -362,25 +352,14 @@
       {% for item in items %}
       <tr>
         <td class="col-idx">{{ item.index }}</td>
-        <td class="col-name">
-          {{ item.name }}
-          {% if item.status_tag == 'out_of_stock' %}
-            <span class="status-pill status-out_of_stock">نفد</span>
-          {% elif item.status_tag == 'low_stock' %}
-            <span class="status-pill status-low_stock">نواقص</span>
-          {% endif %}
-        </td>
-        <td class="col-qty">
-          <span style="font-weight: 700; {% if item.raw_quantity <= 0 %}color: #dc2626;{% elif item.status_tag == 'low_stock' %}color: #ea580c;{% else %}color: #15803d;{% endif %}">
-            {{ item.quantity }}
-          </span>
-        </td>
+        <td class="col-name">{{ item.name }}</td>
+        <td class="col-qty">{{ item.quantity }}</td>
         <td class="col-purch">{{ item.purchase_price }}</td>
         <td class="col-sell">
           {% if item.has_sell_price %}
             {{ item.sell_price }}
           {% else %}
-            <span style="color: #94a3b8;">—</span>
+            <span class="dash">—</span>
           {% endif %}
         </td>
         <td class="col-total">{{ item.total_value }}</td>
@@ -388,7 +367,7 @@
       {% else %}
       <tr>
         <td colspan="6" class="empty-state">
-          لا توجد منتجات مطابقة لهذا التحديد في المخزون.
+          لا توجد أصناف مطابقة لهذا التحديد.
         </td>
       </tr>
       {% endfor %}
@@ -396,10 +375,10 @@
     {% if items %}
     <tfoot>
       <tr>
-        <td colspan="2" style="text-align: right; padding-right: 12px;">الإجمالي الكلي:</td>
+        <td colspan="2" style="text-align: right; padding-right: 10px;">الإجمالي الكلي:</td>
         <td style="text-align: center;">{{ total_quantity }}</td>
-        <td style="text-align: left; color: #64748b;">—</td>
-        <td style="text-align: left; color: #64748b;">—</td>
+        <td style="text-align: left; color: #94a3b8;">—</td>
+        <td style="text-align: left; color: #94a3b8;">—</td>
         <td style="text-align: left;">{{ total_inventory_value }}</td>
       </tr>
     </tfoot>
