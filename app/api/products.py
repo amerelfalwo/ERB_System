@@ -1,7 +1,8 @@
 from decimal import Decimal
 from typing import Optional
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -11,6 +12,7 @@ from app.core.deps import get_current_user
 from app.models.domain import Invoice, InvoiceItem, InvoiceType, Product, StockBatch, User, Party
 from app.repositories.base import ProductRepository
 from app.schemas.product import ProductCreate
+from app.services.pdf_service import generate_inventory_pdf, generate_inventory_pdf_filename
 
 from sqlalchemy import text
 router = APIRouter(prefix="/products", tags=["products"])
@@ -144,6 +146,33 @@ async def list_products_select(
     res = prod_repo.get_all_for_select()
     await set_cache(current_user.tenant_id, cache_key, res, ttl=600)
     return res
+
+
+@router.get("/export/pdf")
+def export_inventory_pdf(
+    status: Optional[str] = "all",
+    search: Optional[str] = None,
+    sort: Optional[str] = "name_asc",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    pdf_bytes = generate_inventory_pdf(
+        db=db,
+        tenant_id=current_user.tenant_id,
+        status=status,
+        search=search,
+        sort=sort,
+    )
+    utf8_filename, ascii_filename = generate_inventory_pdf_filename(status)
+    encoded_filename = quote(utf8_filename)
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{encoded_filename}',
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
 
 @router.delete("/{product_id}")

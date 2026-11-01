@@ -221,3 +221,167 @@ def generate_invoice_pdf(db: Session, invoice: Invoice) -> bytes:
     # Convert HTML to PDF using WeasyPrint
     pdf_bytes = HTML(string=html_content).write_pdf()
     return pdf_bytes
+
+
+def generate_inventory_pdf_filename(status: str | None = "all") -> tuple[str, str]:
+    now_str = datetime.now().strftime("%Y-%m-%d")
+    status_label_map = {
+        "in_stock": "المتوفر",
+        "low_stock": "النواقص",
+        "out_of_stock": "المنتهي",
+        "all": "شامل",
+    }
+    label = status_label_map.get(status or "all", "شامل")
+    utf8_filename = f"تقرير_المخزون_{label}_{now_str}.pdf"
+    ascii_filename = f"inventory_report_{status or 'all'}_{now_str}.pdf"
+    return utf8_filename, ascii_filename
+
+
+def generate_inventory_pdf(
+    db: Session,
+    tenant_id: int,
+    status: str | None = "all",
+    search: str | None = None,
+    sort: str | None = "name_asc",
+) -> bytes:
+    from app.repositories.base import ProductRepository
+
+    tenant = db.execute(
+        select(Tenant).where(Tenant.id == tenant_id)
+    ).scalar_one_or_none()
+
+    prod_repo = ProductRepository(db, tenant_id)
+    products = prod_repo.list(skip=0, limit=None, search=search, status=status, sort=sort)
+
+    product_ids = [p.id for p in products]
+    latest_batch_by_product = prod_repo.get_latest_batches_for_products(product_ids)
+    stock_dict = prod_repo.get_total_stock_for_products(product_ids)
+
+    items = []
+    total_quantity = Decimal("0")
+    total_inventory_value = Decimal("0")
+    in_stock_count = 0
+    low_stock_count = 0
+    out_of_stock_count = 0
+
+    for idx, p in enumerate(products, start=1):
+        latest_batch = latest_batch_by_product.get(p.id)
+
+        qty_num = stock_dict.get(p.id, 0.0)
+        qty_dec = Decimal(str(qty_num))
+        min_stock_dec = Decimal(str(p.min_stock if p.min_stock is not None else 5))
+
+        purch_price = Decimal("0")
+        if p.purchase_price and float(p.purchase_price) > 0:
+            purch_price = Decimal(str(p.purchase_price))
+        elif p.last_purchase_price and float(p.last_purchase_price) > 0:
+            purch_price = Decimal(str(p.last_purchase_price))
+        elif latest_batch and latest_batch.purchase_price and float(latest_batch.purchase_price) > 0:
+            purch_price = Decimal(str(latest_batch.purchase_price))
+
+        has_sell_price = False
+        sell_price = Decimal("0")
+        if p.sell_price and float(p.sell_price) > 0:
+            sell_price = Decimal(str(p.sell_price))
+            has_sell_price = True
+        elif latest_batch and latest_batch.current_selling_price and float(latest_batch.current_selling_price) > 0:
+            sell_price = Decimal(str(latest_batch.current_selling_price))
+            has_sell_price = True
+
+        item_total_value = qty_dec * purch_price
+
+        if qty_dec <= 0:
+            status_tag = "out_of_stock"
+            status_text = "نفد"
+            out_of_stock_count += 1
+            low_stock_count += 1
+        elif qty_dec <= min_stock_dec:
+            status_tag = "low_stock"
+            status_text = "نواقص"
+            low_stock_count += 1
+            in_stock_count += 1
+        else:
+            status_tag = "in_stock"
+            status_text = "متوفر"
+            in_stock_count += 1
+
+        total_quantity += qty_dec
+        total_inventory_value += item_total_value
+
+        if qty_dec == qty_dec.to_integral_value():
+            qty_formatted = f"{int(qty_dec):,}"
+        else:
+            qty_formatted = f"{float(qty_dec):,.2f}"
+
+        items.append({
+            "index": idx,
+            "id": p.id,
+            "name": p.name,
+            "quantity": qty_formatted,
+            "raw_quantity": float(qty_dec),
+            "purchase_price": _fmt_money(purch_price),
+            "raw_purchase_price": float(purch_price),
+            "has_sell_price": has_sell_price,
+            "sell_price": _fmt_money(sell_price) if has_sell_price else "—",
+            "total_value": _fmt_money(item_total_value),
+            "status_tag": status_tag,
+            "status_text": status_text,
+            "min_stock": float(min_stock_dec),
+        })
+
+    if status == "in_stock":
+        report_title = "تقرير الأصناف المتوفرة في المخزون"
+        report_filter_label = "المتوفر في المخزون"
+        badge_class = "badge-success"
+    elif status == "low_stock":
+        report_title = "تقرير نواقص المخزون والحد الأدنى"
+        report_filter_label = "النواقص وحد الطلب"
+        badge_class = "badge-warning"
+    elif status == "out_of_stock":
+        report_title = "تقرير الأصناف المنتهية من المخزون"
+        report_filter_label = "المنتهي من المخزون"
+        badge_class = "badge-danger"
+    else:
+        report_title = "تقرير جرد المخزون العام"
+        report_filter_label = "شامل جميع الأصناف"
+        badge_class = "badge-primary"
+
+    tenant_name = tenant.company_name if tenant and tenant.company_name else "نظام إدارة المؤسسات ERB"
+    tenant_logo_url = tenant.logo_url if tenant else None
+    if tenant_logo_url and tenant_logo_url.startswith("/"):
+        backend_root = Path(__file__).parent.parent.parent
+        potential_file = backend_root / tenant_logo_url.lstrip("/")
+        if potential_file.exists():
+            tenant_logo_url = potential_file.as_uri()
+
+    fonts_dir = (Path(__file__).parent.parent / "static" / "fonts").as_uri()
+
+    if total_quantity == total_quantity.to_integral_value():
+        formatted_total_quantity = f"{int(total_quantity):,}"
+    else:
+        formatted_total_quantity = f"{float(total_quantity):,.2f}"
+
+    context: Dict[str, Any] = {
+        "fonts_dir": fonts_dir,
+        "tenant_name": tenant_name,
+        "tenant_logo_url": tenant_logo_url,
+        "tenant_phone": tenant.phone if tenant else "",
+        "report_title": report_title,
+        "report_filter_label": report_filter_label,
+        "badge_class": badge_class,
+        "generation_date": datetime.now().strftime("%Y-%m-%d %I:%M %p"),
+        "search_term": search if search else None,
+        "items": items,
+        "total_items_count": len(items),
+        "total_quantity": formatted_total_quantity,
+        "total_inventory_value": _fmt_money(total_inventory_value),
+        "in_stock_count": in_stock_count,
+        "low_stock_count": low_stock_count,
+        "out_of_stock_count": out_of_stock_count,
+    }
+
+    template = jinja_env.get_template("inventory_pdf.html")
+    html_content = template.render(**context)
+
+    pdf_bytes = HTML(string=html_content).write_pdf()
+    return pdf_bytes

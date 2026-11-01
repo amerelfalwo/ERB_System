@@ -422,9 +422,25 @@ class ProductRepository:
                 q = q.where(Product.id.in_(subq))
             elif status == "out_of_stock":
                 q = q.where(~Product.id.in_(subq))
-        return self._db.execute(
-            q.offset(skip).limit(limit)
-        ).scalars().all()
+        elif status == "low_stock":
+            batch_subq = (
+                select(
+                    StockBatch.product_id,
+                    func.coalesce(func.sum(StockBatch.remaining_quantity), 0).label("remaining_qty")
+                )
+            )
+            if self._tid is not None:
+                batch_subq = batch_subq.where(StockBatch.tenant_id == self._tid)
+            batch_subq = batch_subq.group_by(StockBatch.product_id).subquery()
+
+            q = q.outerjoin(batch_subq, batch_subq.c.product_id == Product.id)
+            q = q.where(func.coalesce(batch_subq.c.remaining_qty, 0) <= func.coalesce(Product.min_stock, 5))
+
+        if skip:
+            q = q.offset(skip)
+        if limit is not None:
+            q = q.limit(limit)
+        return self._db.execute(q).scalars().all()
 
     def get_all_for_select(self) -> List[dict]:
         rows = self._db.execute(

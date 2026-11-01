@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ report_title }}</title>
+  <style>
+    {% if fonts_dir %}
+    @font-face {
+      font-family: 'Readex Pro';
+      font-style: normal;
+      font-weight: 400;
+      src: url('{{ fonts_dir }}/ReadexPro-Regular.ttf') format('truetype');
+    }
+    @font-face {
+      font-family: 'Readex Pro';
+      font-style: normal;
+      font-weight: 700;
+      src: url('{{ fonts_dir }}/ReadexPro-Bold.ttf') format('truetype');
+    }
+    {% endif %}
+
+    @page {
+      size: A4 portrait;
+      margin: 12mm 10mm 14mm 10mm;
+      @bottom-right {
+        content: "{{ tenant_name }} - تقرير المخزون";
+        font-family: 'Readex Pro', sans-serif;
+        font-size: 8.5pt;
+        color: #64748b;
+      }
+      @bottom-center {
+        content: "صفحة " counter(page) " من " counter(pages);
+        font-family: 'Readex Pro', sans-serif;
+        font-size: 8.5pt;
+        color: #475569;
+        font-weight: bold;
+      }
+      @bottom-left {
+        content: "{{ generation_date }}";
+        font-family: 'Readex Pro', sans-serif;
+        font-size: 8.5pt;
+        color: #64748b;
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    body {
+      font-family: 'Readex Pro', Arial, sans-serif;
+      direction: rtl;
+      text-align: right;
+      color: #0f172a;
+      background-color: #ffffff;
+      margin: 0;
+      padding: 0;
+      font-size: 10pt;
+      line-height: 1.4;
+    }
+
+    /* ── Header ─────────────────────────────────────────── */
+    .header-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 12px;
+      border-bottom: 2px solid #0284c7;
+      padding-bottom: 8px;
+    }
+
+    .header-table td {
+      vertical-align: middle;
+      padding: 4px 6px;
+    }
+
+    .tenant-info {
+      text-align: right;
+      width: 40%;
+    }
+
+    .tenant-title {
+      font-size: 16pt;
+      font-weight: 700;
+      color: #0f172a;
+      margin: 0 0 4px 0;
+    }
+
+    .tenant-sub {
+      font-size: 9pt;
+      color: #64748b;
+      margin: 0;
+    }
+
+    .report-badge-container {
+      text-align: center;
+      width: 35%;
+    }
+
+    .report-main-title {
+      font-size: 13pt;
+      font-weight: 700;
+      color: #0284c7;
+      margin: 0 0 4px 0;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 8.5pt;
+      font-weight: 700;
+    }
+
+    .badge-primary { background-color: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; }
+    .badge-success { background-color: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
+    .badge-warning { background-color: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
+    .badge-danger  { background-color: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
+
+    .meta-info {
+      text-align: left;
+      width: 25%;
+      font-size: 8.5pt;
+      color: #475569;
+      line-height: 1.5;
+    }
+
+    .tenant-logo {
+      max-height: 55px;
+      max-width: 140px;
+      object-fit: contain;
+    }
+
+    /* ── KPI Summary Cards ───────────────────────────────── */
+    .kpi-table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 8px 0;
+      margin-bottom: 14px;
+    }
+
+    .kpi-card {
+      background-color: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 8px 10px;
+      text-align: center;
+      vertical-align: middle;
+      width: 25%;
+    }
+
+    .kpi-label {
+      font-size: 8pt;
+      color: #64748b;
+      font-weight: 400;
+      margin-bottom: 3px;
+    }
+
+    .kpi-value {
+      font-size: 11.5pt;
+      font-weight: 700;
+      color: #0f172a;
+    }
+
+    .kpi-value.accent {
+      color: #0284c7;
+    }
+
+    /* ── Data Table ──────────────────────────────────────── */
+    .inventory-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 4px;
+    }
+
+    .inventory-table thead {
+      display: table-header-group;
+    }
+
+    .inventory-table thead th {
+      background-color: #0f172a;
+      color: #ffffff;
+      font-size: 8.5pt;
+      font-weight: 700;
+      padding: 7px 8px;
+      border: 1px solid #0f172a;
+      text-align: center;
+    }
+
+    .inventory-table thead th.text-right {
+      text-align: right;
+    }
+
+    .inventory-table thead th.text-left {
+      text-align: left;
+    }
+
+    .inventory-table tbody tr {
+      page-break-inside: avoid;
+    }
+
+    .inventory-table tbody tr:nth-child(even) {
+      background-color: #f8fafc;
+    }
+
+    .inventory-table tbody tr:hover {
+      background-color: #f1f5f9;
+    }
+
+    .inventory-table td {
+      padding: 6px 8px;
+      border: 1px solid #cbd5e1;
+      font-size: 9pt;
+      vertical-align: middle;
+    }
+
+    .col-idx {
+      width: 4%;
+      text-align: center;
+      color: #64748b;
+      font-weight: 700;
+    }
+
+    .col-name {
+      width: 38%;
+      text-align: right;
+      font-weight: 700;
+      color: #0f172a;
+    }
+
+    .col-qty {
+      width: 13%;
+      text-align: center;
+      font-weight: 700;
+      font-size: 9.5pt;
+    }
+
+    .col-purch {
+      width: 15%;
+      text-align: left;
+      direction: ltr;
+      font-family: 'Readex Pro', sans-serif;
+    }
+
+    .col-sell {
+      width: 15%;
+      text-align: left;
+      direction: ltr;
+      font-family: 'Readex Pro', sans-serif;
+    }
+
+    .col-total {
+      width: 15%;
+      text-align: left;
+      direction: ltr;
+      font-weight: 700;
+      color: #0f172a;
+      font-family: 'Readex Pro', sans-serif;
+    }
+
+    /* Status Pills in Table */
+    .status-pill {
+      display: inline-block;
+      font-size: 7.5pt;
+      padding: 1px 6px;
+      border-radius: 4px;
+      margin-right: 4px;
+      font-weight: normal;
+    }
+    .status-in_stock { color: #166534; background-color: #dcfce7; }
+    .status-low_stock { color: #9a3412; background-color: #ffedd5; }
+    .status-out_of_stock { color: #991b1b; background-color: #fee2e2; }
+
+    /* ── Table Footer Totals ─────────────────────────────── */
+    .inventory-table tfoot {
+      display: table-footer-group;
+    }
+
+    .inventory-table tfoot tr td {
+      background-color: #e2e8f0;
+      border: 1px solid #94a3b8;
+      font-weight: 700;
+      font-size: 9.5pt;
+      color: #0f172a;
+      padding: 8px 8px;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 30px;
+      color: #64748b;
+      font-size: 11pt;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <table class="header-table">
+    <tr>
+      <td class="tenant-info">
+        {% if tenant_logo_url %}
+          <img src="{{ tenant_logo_url }}" class="tenant-logo" alt="Logo" /><br/>
+        {% endif %}
+        <div class="tenant-title">{{ tenant_name }}</div>
+        <p class="tenant-sub">نظام إدارة المخزون والمستودعات</p>
+        {% if tenant_phone %}<p class="tenant-sub">هاتف: {{ tenant_phone }}</p>{% endif %}
+      </td>
+
+      <td class="report-badge-container">
+        <div class="report-main-title">{{ report_title }}</div>
+        <span class="badge {{ badge_class }}">{{ report_filter_label }}</span>
+        {% if search_term %}
+          <div style="font-size: 8pt; color: #64748b; margin-top: 4px;">نتائج البحث عن: "{{ search_term }}"</div>
+        {% endif %}
+      </td>
+
+      <td class="meta-info">
+        <div><strong>تاريخ التقرير:</strong></div>
+        <div>{{ generation_date }}</div>
+        <div style="margin-top: 4px;"><strong>إجمالي الأصناف:</strong> {{ total_items_count }} صنف</div>
+      </td>
+    </tr>
+  </table>
+
+  <!-- KPI Summary Cards -->
+  <table class="kpi-table">
+    <tr>
+      <td class="kpi-card">
+        <div class="kpi-label">عدد الأصناف في التقرير</div>
+        <div class="kpi-value">{{ total_items_count }}</div>
+      </td>
+      <td class="kpi-card">
+        <div class="kpi-label">إجمالي الكميات (وحدة/قطعة)</div>
+        <div class="kpi-value">{{ total_quantity }}</div>
+      </td>
+      <td class="kpi-card">
+        <div class="kpi-label">إجمالي قيمة المخزون (شراء)</div>
+        <div class="kpi-value accent">{{ total_inventory_value }}</div>
+      </td>
+      <td class="kpi-card">
+        <div class="kpi-label">نطاق التقرير</div>
+        <div class="kpi-value" style="font-size: 10pt;">{{ report_filter_label }}</div>
+      </td>
+    </tr>
+  </table>
+
+  <!-- Main Table -->
+  <table class="inventory-table">
+    <thead>
+      <tr>
+        <th class="col-idx">#</th>
+        <th class="col-name text-right">اسم الصنف / المنتج</th>
+        <th class="col-qty">الكمية المتاحة</th>
+        <th class="col-purch text-left">سعر الشراء</th>
+        <th class="col-sell text-left">سعر البيع</th>
+        <th class="col-total text-left">إجمالي القيمة</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td class="col-idx">{{ item.index }}</td>
+        <td class="col-name">
+          {{ item.name }}
+          {% if item.status_tag == 'out_of_stock' %}
+            <span class="status-pill status-out_of_stock">نفد</span>
+          {% elif item.status_tag == 'low_stock' %}
+            <span class="status-pill status-low_stock">نواقص</span>
+          {% endif %}
+        </td>
+        <td class="col-qty">
+          <span style="font-weight: 700; {% if item.raw_quantity <= 0 %}color: #dc2626;{% elif item.status_tag == 'low_stock' %}color: #ea580c;{% else %}color: #15803d;{% endif %}">
+            {{ item.quantity }}
+          </span>
+        </td>
+        <td class="col-purch">{{ item.purchase_price }}</td>
+        <td class="col-sell">
+          {% if item.has_sell_price %}
+            {{ item.sell_price }}
+          {% else %}
+            <span style="color: #94a3b8;">—</span>
+          {% endif %}
+        </td>
+        <td class="col-total">{{ item.total_value }}</td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="6" class="empty-state">
+          لا توجد منتجات مطابقة لهذا التحديد في المخزون.
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+    {% if items %}
+    <tfoot>
+      <tr>
+        <td colspan="2" style="text-align: right; padding-right: 12px;">الإجمالي الكلي:</td>
+        <td style="text-align: center;">{{ total_quantity }}</td>
+        <td style="text-align: left; color: #64748b;">—</td>
+        <td style="text-align: left; color: #64748b;">—</td>
+        <td style="text-align: left;">{{ total_inventory_value }}</td>
+      </tr>
+    </tfoot>
+    {% endif %}
+  </table>
+
+</body>
+</html>
